@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+
+#macOS
+.DS_Store
+
+dragon_processing.egg-info/
