@@ -5,7 +5,7 @@ from cmocean import cm
 from .utilities import dragon_select_cast
 
 
-def plot_beam_variable(data,variable_name,cmap,vmin=None,vmax=None,with_bottom_track=False,deployment_name=None):
+def plot_beam_variable(data,variable_name,cmap,title=None,vmin=None,vmax=None,with_bottom_track=False):
     fig, axes = plt.subplots(1,data.adcpBeam.size,sharex=True,sharey=True)
 
     for i,ax in enumerate(axes):
@@ -27,13 +27,13 @@ def plot_beam_variable(data,variable_name,cmap,vmin=None,vmax=None,with_bottom_t
     cbar = fig.colorbar(pc,ax=axes)
     cbar.set_label(f'{variable_name} ({data[variable_name].attrs['units']})')
 
-    fig.suptitle(deployment_name)
+    fig.suptitle(title)
     axes[0].yaxis.set_inverted(True)
     axes[0].set_ylabel('Depth (m)')
 
     return fig
 
-def plot_gridded_variable(data, variable_name, cmap, label_dim, vmin=None,vmax=None,deployment_name=None):
+def plot_gridded_variable(data, variable_name, cmap, label_dim, title=None, vmin=None,vmax=None):
     fig, axes = plt.subplots(1,data[label_dim].size,sharex=True,sharey=True)
 
     for i,ax in enumerate(axes):
@@ -45,13 +45,13 @@ def plot_gridded_variable(data, variable_name, cmap, label_dim, vmin=None,vmax=N
             vmax=vmax,
             cmap=cmap
         )
-        ax.set_title(data[label_dim][i])
+        ax.set_title(data[label_dim].data[i])
         ax.set_xlabel('Distance (m)')
 
     cbar = fig.colorbar(pc,ax=axes)
     cbar.set_label(f'{variable_name} ({data[variable_name].attrs['units']})')
 
-    fig.suptitle(deployment_name)
+    fig.suptitle(title)
     axes[0].yaxis.set_inverted(True)
     axes[0].set_ylabel('Depth (m)')
 
@@ -90,11 +90,11 @@ def initial_dragon_plots(dragon,save_folder,deploy_name):
                 cast_dir,
                 var['variable'],
                 var['cmap'],
-                var['vmin'],
-                var['vmax'],
-                deployment_name=deploy_name
+                vmin=var['vmin'],
+                vmax=var['vmax'],
+                title=f'{deploy_name}_cast_{cast.cast.data}_{dir}'
                 )
-                for cast_dir in [cast_down,cast_up]
+                for dir,cast_dir in zip(['down','up'],[cast_down,cast_up])
             ]
 
             figs[0].savefig(save_folder / f'cast_{cast.cast.data}_down_{name}.png')
@@ -110,9 +110,9 @@ def initial_dragon_plots(dragon,save_folder,deploy_name):
                 label_dim='ENU',
                 vmin=-0.5,
                 vmax=0.5,
-                deployment_name=deploy_name,
+                title=f'{deploy_name}_cast_{cast.cast.data}_{dir}'
             )
-            for cast_dir in [cast_down,cast_up]
+            for dir,cast_dir in zip(['down','up'],[cast_down,cast_up])
         ]
 
         figs[0].savefig(save_folder / f'cast_{cast.cast.data}_down_vel_ENU.png')
