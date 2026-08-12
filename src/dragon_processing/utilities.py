@@ -117,6 +117,63 @@ def lat_lon_to_utm(
 
     return x-x0, y-y0, zone
 
+def dragon_select_cast(dragon, cast_num=1, cast_type = None):
+    # cast_num can be an integer, half integer, or a list of integers and half integers
+    # cast_type can be 'down', 'up', 'both', or None
+
+    if isinstance(cast_num, (list, np.ndarray)):
+        #if selecting multiple casts
+
+        if cast_type in ['down', 'up']:
+            raise ValueError("When selecting multiple casts, cast_type must be 'both' or None")
+        
+        elif cast_type is None:
+            if np.any(~np.logical_or(cast_num%1==0,cast_num%1==0.5)):
+                raise ValueError("When selecting multiple casts without specifying cast_type, all elements of cast_num must be integers or half-integers representing downcasts and upcasts respectively.")
+            else:
+                dragon = dragon.isel({dim: (dragon[dim.replace('time','cast_num')].isin(cast_num)) for dim in dragon.dims if 'time' in dim})
+
+        elif cast_type == 'both':
+            if np.any(cast_num%1!=0):
+                raise ValueError("When selecting multiple casts with cast_type 'both', all elements of cast_num must be integers.")
+            else:
+                #select for all casts in cast list (both up and down) along each time dimension
+                dragon = dragon.isel({dim: (dragon[dim.replace('time','cast_num')].isin(cast_num) | dragon[dim.replace('time','cast_num')].isin([i + 0.5 for i in cast_num])) for dim in dragon.dims if 'time' in dim})
+        else:
+            raise ValueError("cast_type must be 'down', 'up', 'both', or None.")
+
+    else:
+        #if selecting a single cast
+        if cast_type == 'up':
+            cast_num = int(cast_num) + 0.5
+        elif cast_type == 'down' or cast_type == 'both':
+            cast_num = int(cast_num)
+        elif cast_type is not None:
+            raise ValueError("cast_type must be 'down', 'up', 'both', or None.")
+        
+        #check that cast_num is present in dataset
+        if cast_num not in dragon.cast_num.data:
+            raise ValueError(f"cast_num {cast_num} not found in dragon dataset.")
+
+        #select for cast along each time dimension
+        if cast_type == 'both':
+            for dim in dragon.dims:
+                if 'time' in dim:
+                    dragon = dragon.isel({dim: (dragon[dim.replace('time','cast_num')] == cast_num) | (dragon[dim.replace('time','cast_num')] == cast_num + 0.5)})
+        else:
+            for dim in dragon.dims:
+                if 'time' in dim:
+                    dragon = dragon.isel({dim: dragon[dim.replace('time','cast_num')] == cast_num})
+
+    if 'cast' in dragon.dims:
+        #if cast is a dimension (i.e. if multiple casts are present), select for only the casts that are kept
+        dragon = dragon.isel({'cast': dragon['cast'].isin(dragon.cast_num.data)})
+    if 'deployment' in dragon.dims:
+        #if deployment is a dimension (i.e. if multiple deployments are present), select for only the deployments that are kept
+        dragon = dragon.isel({'deployment': dragon['deployment'].isin(dragon.deploymentNum.data)})
+
+    return dragon.squeeze()
+
 def amplitude_to_backscatter(amp, distance,alpha = 9.793e-3, convertAmpToDB=False):
     # Relevant references are Deines (1999) and Mullison (2017)
     # the full equation is:

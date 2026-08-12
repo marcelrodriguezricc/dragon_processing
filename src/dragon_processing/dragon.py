@@ -8,6 +8,7 @@ from scipy.interpolate import interp1d
 
 from .adcp import initial_clean_signature, load_raw_signature
 from .ctd import initial_clean_dragon_ctd, readRSK
+from .plotting import initial_dragon_plots
 from .utilities import (
     convert_time_to_float,
     dataset_convert_timestamp,
@@ -255,6 +256,107 @@ def dragon_gps_data(dragon,gps,x0=0,y0=0):
 
     return dragon
 
+def dragon_merge_overlapping_casts(cast_list,merge_gap=np.timedelta64(30, 's')):
+    if len(cast_list) == 0:
+        return []
+    
+    cast_list.sort(key=lambda x: x[0])
+
+    merged = [cast_list[0]]
+
+    for start, middle, end, max_pressure in cast_list[1:]:
+        if start <= merged[-1][2]+merge_gap:
+            merged[-1][2] = max(merged[-1][2], end)
+            if max_pressure > merged[-1][3]:
+                merged[-1][1] = middle
+                merged[-1][3] = max_pressure
+        else:
+            merged.append([start, middle, end, max_pressure])
+
+    return merged
+
+def find_dragon_casts(dragon,time_coord=None,pressure_coord=None,pressure_requirement=10, merge_gap = np.timedelta64(30,'s')):
+    if time_coord is None:
+        time_coord = 'time'
+    if pressure_coord is None:
+        pressure_coord = 'pressure'
+
+    cast_list = []
+    ind = np.where(np.diff(dragon[time_coord])>10*np.nanmedian(np.diff(dragon[time_coord])))[0]
+    ind = np.r_[-1, ind, dragon[time_coord].size - 1]
+    for i in np.arange(len(ind)-1):
+        t_start = dragon[time_coord].data[ind[i]+1]
+        t_end = dragon[time_coord].data[ind[i+1]]
+        i_middle = np.nanargmax(dragon[pressure_coord].data[ind[i]+1:ind[i+1]+1])
+        t_middle = dragon[time_coord].data[ind[i]+1:ind[i+1]+1][i_middle]
+        p_max = dragon[pressure_coord].data[ind[i]+1:ind[i+1]+1][i_middle]
+        if p_max > pressure_requirement:
+            cast_list.append([t_start,t_middle,t_end,p_max])
+
+    return dragon_merge_overlapping_casts(cast_list,merge_gap=merge_gap)
+
+def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
+    if time_coords is None:
+        time_coords = ['time']
+    if cast_num_names is None:
+        cast_num_names = ['cast_num']
+
+
+    cast_num_dict = {cast_num_name : np.full(dragon[time_coord].size,np.nan) for time_coord,cast_num_name in zip(time_coords,cast_num_names)}
+
+    cast_num_down = 1
+    cast_num_up = 1.5
+    
+    for t_start, t_middle, t_end, max_pressure in cast_list:
+        for time_coord,cast_num_name in zip(time_coords,cast_num_names):
+            ind_down = np.logical_and(dragon[time_coord].data>=t_start,dragon[time_coord].data<t_middle)
+            ind_up = np.logical_and(dragon[time_coord].data>=t_middle,dragon[time_coord].data<=t_end)
+ 
+            cast_num_dict[cast_num_name][ind_down] = cast_num_down
+            cast_num_dict[cast_num_name][ind_up] = cast_num_up
+
+        cast_num_down += 1
+        cast_num_up += 1
+
+    dragon.coords['cast'] = np.arange(cast_num_down-1)+1
+    dragon.cast.attrs['notes'] = 'Unique cast numbers in the dataset. Integer values indicate downcasts, fractional values (e.g. 1.5) indicate upcasts.'
+
+    for time_coord,cast_num_name in zip(time_coords,cast_num_names):
+        dragon[cast_num_name] = (time_coord,cast_num_dict[cast_num_name])
+
+    return dragon
+
+def cut_dragon_to_casts(dragon,pressure_cutoff = 1):
+    time_coords = ['time', 'time_ctd', 'time_full']
+    cast_num_names = ['cast_num', 'cast_num_ctd', 'cast_num_full']
+    pressure_coords = ['pressure', 'pressure_ctd', 'pressure_adcp']
+    bottomDetection_names = ['bottomDetectionEdgeMin', 'bottomDetectionEdgeMax', 'bottomDetectionAmplitudeThreshold', 'bottomDetectionSkipped', 'bottomDetectionMaxInterpolateGap', 'bottomDetectionEdgeBlurKernelX', 'bottomDetectionEdgeBlurKernelY']
+
+    dragon = dragon.isel(
+        time_full=dragon.pressure_adcp>pressure_cutoff,
+        time=dragon.pressure>pressure_cutoff,
+        time_ctd=dragon.pressure_ctd>pressure_cutoff
+    )
+
+    t_start = max(dragon[time].data[0] for time in time_coords)
+    t_end = min(dragon[time].data[-1] for time in time_coords)
+    t_slice = slice(t_start, t_end)
+    dragon = dragon.sel(
+        time=t_slice,
+        time_ctd=t_slice,
+        time_full=t_slice,
+    )
+    
+    cast_list = find_dragon_casts(dragon,time_coords[0],pressure_coords[0])
+    dragon = number_casts(dragon,cast_list,time_coords,cast_num_names)
+    dragon = dragon.isel(time=~np.isnan(dragon.cast_num),time_ctd = ~np.isnan(dragon.cast_num_ctd),time_full=~np.isnan(dragon.cast_num_full))
+
+    for var in bottomDetection_names:
+        if var in dragon:
+            dragon[var] = dragon[var].expand_dims({'cast': dragon.cast}).transpose('cast',*dragon[var].dims)
+
+    return dragon
+
 def calculate_displacement(start,end,vel,t):
     if np.sum(~np.isnan(vel)) < 5:
         return (np.arange(t.size)/(t.size-1))*(end-start)+start, np.full(t.size, 2), np.nan
@@ -329,9 +431,9 @@ def calculate_adcp_positions(dragon):
     dragon['x_adcp_error'] = ('cast', np.full(dragon.cast.size, np.nan))
     dragon['y_adcp_error'] = ('cast', np.full(dragon.cast.size, np.nan))
 
-    for castNum in np.unique(dragon.castNum.data.astype('int')):
-        ind = np.logical_and(np.logical_or(dragon.castNum==castNum,dragon.castNum == castNum+0.5), ~np.isnat(dragon.time_BT.data))
-        indCast = dragon.cast.data.astype('int') == castNum
+    for cast_num in np.unique(dragon.cast_num.data.astype('int')):
+        ind = np.logical_and(np.logical_or(dragon.cast_num==cast_num,dragon.cast_num == cast_num+0.5), ~np.isnat(dragon.time_BT.data))
+        indCast = dragon.cast.data.astype('int') == cast_num
 
         xPolly = interp_datetime64(dragon.time_BT.data[ind],dragon.time.data[ind], dragon.x_polly.data[ind])
         yPolly = interp_datetime64(dragon.time_BT.data[ind],dragon.time.data[ind], dragon.y_polly.data[ind])
@@ -462,36 +564,35 @@ def update_dragon_origin(dragon,x0=None,y0=None):
     return dragon
 
 def initial_dragon_file_creation(adcp,ctd,x0=0,y0=0,gps=None,existing_beam_cleaning=None,existing_bottom_tracking=None,full_cleaning=False):
-
     
     dragon = create_dragon_basic_coordinates(xr.Dataset(),adcp)
     dragon = dragon_ctd_data(dragon, ctd)
     dragon = dragon_load_adcp_data(dragon,adcp)
-    processing_state = 'Processed ADCP and CTD data combined. CTD data interpolated ont main adcp time stamp for dragon depth temperature and salinity. ' \
-        'data split into casts and numbered by deleting data where depth < 1 meter. Casts dividied into downcasts (integer) and upcasts (0.5) based on deepest depth.'    
+    processing_state = 'Processed ADCP and CTD data combined. CTD data interpolated ont main adcp time stamp for dragon depth temperature and salinity.' 
 
     if gps is not None:
-        dragon = dragon_gps_data(dragon,gps)
-        processing_state = processing_state + ' polly gps data added.'
-        if 'BT' in adcp.modes:
-            if existing_bottom_tracking is not None:
-                raise ValueError('need to implement bottom tracking')
-                processing_state = processing_state + ' Custom bottom tracking implemented.'
-            else:
-                processing_state = ' Using default bottom tracking.'
-            dragon = calculate_adcp_positions(dragon)
-            dragon = calculate_adcp_beam_positions(dragon)
-            processing_state = processing_state + ' Location of adcp calculated based on bottom track velocities and interpolated to main time stamp. ' \
-                'Beam locations calculated based on adcp location, beam angles, and beam distance.'
-            if full_cleaning:
-                raise ValueError('full cleaning not yet implemented')
-                processing_state = processing_state + 'basic beam cleaning performed (distance to wall and surface deleted) interactively for each cast and saved as a mask (except where beam_cleaning_skipped = True)'
-            else: ' No additional beam cleaning performed'
-            
-        dragon = update_dragon_origin(dragon,x0=x0,y0=y0)
+        dragon = dragon_gps_data(dragon,gps,x0=x0,y0=y0)
+        processing_state = processing_state + ' Polly gps data added.'
 
+    dragon = cut_dragon_to_casts(dragon)
+    ' Data split into casts and numbered by deleting data where depth < 1 meter. Casts dividied into downcasts (integer) and upcasts (0.5) based on deepest depth.'   
+
+    if (gps is not None) and 'BT' in adcp.modes:
+        if existing_bottom_tracking is not None:
+            raise ValueError('need to implement bottom tracking')
+            processing_state = processing_state + ' Custom bottom tracking implemented.'
+        else:
+            processing_state = ' Using default bottom tracking.'
+        dragon = calculate_adcp_positions(dragon)
+        dragon = calculate_adcp_beam_positions(dragon)
+        processing_state = processing_state + ' Location of adcp calculated based on bottom track velocities and interpolated to main time stamp. ' \
+            'Beam locations calculated based on adcp location, beam angles, and beam distance.'
+        if full_cleaning:
+            raise ValueError('full cleaning not yet implemented')
+            processing_state = processing_state + 'basic beam cleaning performed (distance to wall and surface deleted) interactively for each cast and saved as a mask (except where beam_cleaning_skipped = True)'
+        else: ' No additional beam cleaning performed'
     else:
-        processing_state = processing_state + 'No GPS data available, so adcp and beam locations are not calculated, and no additional beam cleaning performed.'
+        processing_state = processing_state + ' No GPS data available, so adcp and beam locations are not calculated, and no additional beam cleaning performed.'
 
     dragon.attrs['processingState'] = processing_state
     return dragon
@@ -551,3 +652,14 @@ def process_all(config,overwrite=False,basic_plots=False,default_lat=68.295,defa
                 print(f'creating {save_file.name}')
                 dragon = initial_dragon_file_creation(next(iter(adcp_data.values())),ctd=ctd,x0=config.x0,y0=config.y0,gps=gps,existing_beam_cleaning=existing_beam_cleaning,existing_bottom_tracking=existing_bottom_track)
                 file_save(dragon,save_file,overwrite)
+                if basic_plots:
+                    initial_dragon_plots(dragon,dep_proc_path / 'initial_plots',deployment_num)
+
+def remake_initial_plots(config):
+    deployment_paths = find_deployments(config)
+    for dep in deployment_paths:
+        dep_proc_path = get_proc_path(dep,config)
+        deployment_num = '_'.join(dep.name.split('_')[:-1])
+        dragon_file = dep_proc_path / f'dragon_{deployment_num}.nc'
+        with xr.open_dataset(dragon_file) as dragon:
+            initial_dragon_plots(dragon,dep_proc_path / 'initial_plots', deployment_num)
