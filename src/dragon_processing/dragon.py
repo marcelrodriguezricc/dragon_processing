@@ -7,6 +7,7 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import interp1d
 
 from .adcp import initial_clean_signature, load_raw_signature
+from .beam_binning import beam_bin_deployment
 from .ctd import initial_clean_dragon_ctd, readRSK
 from .plotting import initial_dragon_plots
 from .utilities import (
@@ -181,17 +182,17 @@ def create_dragon_basic_coordinates(dragon,adcp):
     dragon.coords['dist'] = ('bin',adcp.z.data)
     dragon.dist.attrs = adcp.z.attrs.copy()
 
-    dragon.coords['adcpBeam'] = adcp.beam.data
-    dragon.coords['adcpBeam2'] = adcp.beam.data
-    dragon.adcpBeam.attrs = adcp.beam.attrs.copy()
-    dragon.adcpBeam2.attrs = adcp.beam.attrs.copy()
+    dragon.coords['adcp_beam'] = adcp.beam.data
+    dragon.coords['adcp_beam2'] = adcp.beam.data
+    dragon.adcp_beam.attrs = adcp.beam.attrs.copy()
+    dragon.adcp_beam2.attrs = adcp.beam.attrs.copy()
 
     modes = adcp.modes
 
     if 'I' in modes or 'IHR' in modes:        
-        dragon['beam_angle'] = ('adcpBeam',[adcp.beam_angle,]*4+[0,])
+        dragon['beam_angle'] = ('adcp_beam',[adcp.beam_angle,]*4+[0,])
     else:
-        dragon['beam_angle'] = ('adcpBeam',[adcp.beam_angle,]*4)
+        dragon['beam_angle'] = ('adcp_beam',[adcp.beam_angle,]*4)
 
     return dragon
 
@@ -219,7 +220,7 @@ def dragon_load_adcp_data(dragon,adcp):
     vars_rename = ['temperatureRaw', 'pressure', 'depth']
 
     for var in adcp.data_vars:
-        dims = tuple('bin' if d == 'z' else 'adcpBeam' if d == 'beam' else d for d in adcp[var].dims)
+        dims = tuple('bin' if d == 'z' else 'adcp_beam' if d == 'beam' else d for d in adcp[var].dims)
         if var in vars_rename:
             dragon[var+'_adcp'] = (dims, adcp[var].data)
             dragon[var+'_adcp'].attrs = adcp[var].attrs.copy()
@@ -228,16 +229,16 @@ def dragon_load_adcp_data(dragon,adcp):
             dragon[var].attrs = adcp[var].attrs.copy()
 
     for attr in adcp.attrs:
-        dragon.attrs['adcp' + attr[0].upper() + attr[1:]] = adcp.attrs[attr]
+        dragon.attrs[f'adcp_{attr}'] = adcp.attrs[attr]
 
     return dragon
 
 def dragon_gps_data(dragon,gps,x0=0,y0=0):
     
-    dragon['latitude_polly'] = ('time',interp_datetime64(dragon.time.values,gps.time.values,gps.lat.values))
+    dragon['latitude_polly'] = ('time',interp_datetime64(dragon.time.values,gps.time.values,gps.latitude.values))
     dragon.latitude_polly.attrs['units'] = 'degrees_north'
     dragon.latitude_polly.attrs['notes'] = 'Interpolated latitude from GPS data onto ADCP time coordinate. Represents latitude of polly at the surface.'
-    dragon['longitude_polly'] = ('time',interp_datetime64(dragon.time.values,gps.time.values,gps.lon.values))
+    dragon['longitude_polly'] = ('time',interp_datetime64(dragon.time.values,gps.time.values,gps.longitude.values))
     dragon.longitude_polly.attrs['units'] = 'degrees_east'
     dragon.longitude_polly.attrs['notes'] = 'Interpolated longitude from GPS data onto ADCP time coordinate. Represents longitude of polly at the surface.'
 
@@ -306,7 +307,8 @@ def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
 
     cast_num_down = 1
     cast_num_up = 1.5
-    
+
+    unique_cast_nums = []
     for t_start, t_middle, t_end, max_pressure in cast_list:
         for time_coord,cast_num_name in zip(time_coords,cast_num_names):
             ind_down = np.logical_and(dragon[time_coord].data>=t_start,dragon[time_coord].data<t_middle)
@@ -315,10 +317,12 @@ def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
             cast_num_dict[cast_num_name][ind_down] = cast_num_down
             cast_num_dict[cast_num_name][ind_up] = cast_num_up
 
+        unique_cast_nums.extend([cast_num_down,cast_num_up])
+
         cast_num_down += 1
         cast_num_up += 1
 
-    dragon.coords['cast'] = np.arange(cast_num_down-1)+1
+    dragon.coords['cast'] = unique_cast_nums
     dragon.cast.attrs['notes'] = 'Unique cast numbers in the dataset. Integer values indicate downcasts, fractional values (e.g. 1.5) indicate upcasts.'
 
     for time_coord,cast_num_name in zip(time_coords,cast_num_names):
@@ -330,7 +334,7 @@ def cut_dragon_to_casts(dragon,pressure_cutoff = 1):
     time_coords = ['time', 'time_ctd', 'time_full']
     cast_num_names = ['cast_num', 'cast_num_ctd', 'cast_num_full']
     pressure_coords = ['pressure', 'pressure_ctd', 'pressure_adcp']
-    bottomDetection_names = ['bottomDetectionEdgeMin', 'bottomDetectionEdgeMax', 'bottomDetectionAmplitudeThreshold', 'bottomDetectionSkipped', 'bottomDetectionMaxInterpolateGap', 'bottomDetectionEdgeBlurKernelX', 'bottomDetectionEdgeBlurKernelY']
+    bottomDetection_names = ['bottom_detection_edge_min', 'bottom_detection_edge_max', 'bottom_detection_amplitude_threshold', 'bottom_detection_skipped', 'bottom_detection_max_interpolate_gap', 'bottom_detection_edge_blur_kernel_x', 'bottom_detection_edge_blur_kernel_y']
 
     dragon = dragon.isel(
         time_full=dragon.pressure_adcp>pressure_cutoff,
@@ -421,8 +425,8 @@ def calculate_displacement(start,end,vel,t):
 
 def calculate_adcp_positions(dragon):
 
-    dragon['adcpLocation'] = (('time','XYZ'), np.full((dragon.time.size, 3), np.nan))
-    dragon.adcpLocation.data[:,2] = -dataset_convert_timestamp(dragon,'depth_adcp',timeFrom='time_full',timeTo='time')
+    dragon['adcp_location'] = (('time','XYZ'), np.full((dragon.time.size, 3), np.nan))
+    dragon.adcp_location.data[:,2] = -dataset_convert_timestamp(dragon,'depth_adcp',timeFrom='time_full',timeTo='time')
 
     #dragon['x_adcp'] = ('time', np.full(dragon.time.size, np.nan))
     #dragon['y_adcp'] = ('time', np.full(dragon.time.size, np.nan))
@@ -440,15 +444,15 @@ def calculate_adcp_positions(dragon):
 
         x_adcp, x_interpolated, x_error = calculate_displacement(xPolly[0], xPolly[-1], -dragon.velENU_l1_BT.data[ind,0], convert_time_to_float(dragon.time_BT.data[ind]))
         y_adcp, y_interpolated, y_error = calculate_displacement(yPolly[0], yPolly[-1], -dragon.velENU_l1_BT.data[ind,1], convert_time_to_float(dragon.time_BT.data[ind]))
-        dragon.adcpLocation.data[ind, 0] = interp_datetime64(dragon.time.data[ind], dragon.time_BT.data[ind], x_adcp)
-        dragon.adcpLocation.data[ind, 1] = interp_datetime64(dragon.time.data[ind], dragon.time_BT.data[ind], y_adcp)
+        dragon.adcp_location.data[ind, 0] = interp_datetime64(dragon.time.data[ind], dragon.time_BT.data[ind], x_adcp)
+        dragon.adcp_location.data[ind, 1] = interp_datetime64(dragon.time.data[ind], dragon.time_BT.data[ind], y_adcp)
         dragon.x_adcp_interpolated.data[ind] = x_interpolated
         dragon.y_adcp_interpolated.data[ind] = y_interpolated
         dragon.x_adcp_error.data[indCast] = x_error
         dragon.y_adcp_error.data[indCast] = y_error
 
-    dragon.adcpLocation.attrs = dragon.x_polly.attrs.copy()
-    dragon.adcpLocation.attrs['notes'] = 'location in UTM coordinates of the ADCP at depth, x and y locations calculated integrating bottom track velocities and filling in missing data to match start and end positions ' \
+    dragon.adcp_location.attrs = dragon.x_polly.attrs.copy()
+    dragon.adcp_location.attrs['notes'] = 'location in UTM coordinates of the ADCP at depth, x and y locations calculated integrating bottom track velocities and filling in missing data to match start and end positions ' \
     'based on the x_polly and y_polly coordinates (interpolated onto "time_BT" time-stamp). z location based on depth_adcp variable. Result is then interpolated to "time" time-stamp. time periods that rely on interpolating position changes are marked in x_adcp_interpolated and y_adcp_interpolated.'
 
     dragon.x_adcp_interpolated.attrs['notes'] = '0 where full bottom track data was available, 1 where interpolation between known velocities was needed. 2 where linear interpolation to start or end position was needed.'
@@ -470,7 +474,7 @@ def calculate_adcp_beam_positions(dragon):
     dragon['bottom_distance_along_beam'] = dragon.bottom_distance_beam.copy()/np.cos(dragon.adcp_beam_angle*np.pi/180)
     dragon.bottom_distance_along_beam.attrs['notes'] = 'distance in the along beam direction'
 
-    #reformat to dimensions of time, dist, adcpBeam, XYZ
+    #reformat to dimensions of time, dist, adcp_beam, XYZ
     beamDirections = np.repeat(
         dataset_convert_timestamp(dragon,'beam_directions_earth',timeFrom='time_full',timeTo='time')[:,np.newaxis,:,:],
         dragon.dist.size, axis=1)
@@ -478,30 +482,30 @@ def calculate_adcp_beam_positions(dragon):
     beamDirectionsWall = dataset_convert_timestamp(dragon,'beam_directions_earth',timeFrom='time_full',timeTo='time')
 
     dragon_location = np.repeat(np.repeat(
-        dragon.adcpLocation.data.copy()[:,np.newaxis,np.newaxis,:],
+        dragon.adcp_location.data.copy()[:,np.newaxis,np.newaxis,:],
         dragon.dist.size, axis=1),
-        dragon.adcpBeam.size, axis=2)
+        dragon.adcp_beam.size, axis=2)
     
     dragon_locationWall = np.repeat(
-        dragon.adcpLocation.data.copy()[:,np.newaxis,:],
-        dragon.adcpBeam.size, axis=1
+        dragon.adcp_location.data.copy()[:,np.newaxis,:],
+        dragon.adcp_beam.size, axis=1
     )
 
     beam_distance = np.repeat(np.repeat(np.repeat(
         dragon.beam_distance.data.copy()[np.newaxis,:,np.newaxis,np.newaxis],
         dragon.time.size, axis=0),
-        dragon.adcpBeam.size, axis=2),
+        dragon.adcp_beam.size, axis=2),
         dragon.direction.size,axis=3)
 
     beam_wall_distance = np.repeat(
         dragon.bottom_distance_along_beam.data.copy()[:,:,np.newaxis],
         dragon.direction.size, axis=2)
     
-    dragon['beam_location'] = (('time','bin','adcpBeam','XYZ'), beam_distance*beamDirections + dragon_location)
+    dragon['beam_location'] = (('time','bin','adcp_beam','XYZ'), beam_distance*beamDirections + dragon_location)
     dragon.beam_location.attrs['notes'] = 'location of each beam bin in UTM coordinates for each timestep and beam, using adcp location and orientation with beam angle'
     dragon.beam_location.attrs['units'] = 'meters in UTM coordinates'
 
-    dragon['beam_wall_location'] = (('time','adcpBeam','XYZ'),beam_wall_distance*beamDirectionsWall+dragon_locationWall)
+    dragon['beam_wall_location'] = (('time','adcp_beam','XYZ'),beam_wall_distance*beamDirectionsWall+dragon_locationWall)
     dragon.beam_wall_location.attrs['notes'] = 'location of bottom as seen by each beam in UTM coordinates for each timestep using using adcp location and orientation with beam angle'
 
     dragon['bin_location'] = (('time','bin','XYZ'),np.mean(beam_distance*beamDirections+dragon_location,axis=2))
@@ -526,7 +530,7 @@ def update_dragon_origin(dragon,x0=None,y0=None):
     xVariables = ['x_polly','fieldX0','plumeOutlineX']
     yVariables = ['y_polly','fieldY0','plumeOutlineY']
 
-    comboVariables = ['beam_location','beam_wall_location','bin_location','adcpLocation','fieldBin_location']
+    comboVariables = ['beam_location','beam_wall_location','bin_location','adcp_location','fieldBin_location']
 
     if x0 is not None:
         xDiff = x0 - dragon.x0
@@ -590,12 +594,18 @@ def initial_dragon_file_creation(adcp,ctd,x0=0,y0=0,gps=None,existing_beam_clean
         if full_cleaning:
             raise ValueError('full cleaning not yet implemented')
             processing_state = processing_state + 'basic beam cleaning performed (distance to wall and surface deleted) interactively for each cast and saved as a mask (except where beam_cleaning_skipped = True)'
-        else: ' No additional beam cleaning performed'
+        else: 
+            dragon['mask_beam_cleaning'] = (('time','bin','adcp_beam'),np.ones((dragon.time.size,dragon.bin.size,dragon.adcp_beam.size),dtype=bool))
+            dragon.mask_beam_cleaning.attrs['notes'] = 'mask for beam cleaning, True means data is kept, False means data is removed. Currently all true because no further beam cleaning has occured.'
+            processing_state = processing_state + ' No additional beam cleaning performed'
     else:
         processing_state = processing_state + ' No GPS data available, so adcp and beam locations are not calculated, and no additional beam cleaning performed.'
 
     dragon.attrs['processingState'] = processing_state
-    return dragon
+
+    dragon = beam_bin_deployment(dragon,max_heading_variation=30)
+
+    return dragon[sorted(dragon.data_vars)]
 
 def process_all(config,overwrite=False,basic_plots=False,default_lat=68.295,default_lon=-30.81):
 

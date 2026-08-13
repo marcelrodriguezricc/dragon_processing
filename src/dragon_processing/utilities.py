@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import xarray as xr
 from pyproj import CRS, Transformer
 from scipy.interpolate import interp1d
 
@@ -209,3 +210,57 @@ def amplitude_to_backscatter(amp, distance,alpha = 9.793e-3, convertAmpToDB=Fals
         backscatter = amp + 2 * alpha * distance + 20 * np.log10(distance)
 
     return backscatter
+
+def project_to_line(x,y,slope,intercept):
+    xproj = (y+x/slope-intercept)/(slope+1/slope)
+    yproj = slope*xproj+intercept
+    return xproj,yproj
+
+def undo_projection(xProj,slope,intercept,x0,y0):
+
+    if isinstance(slope,xr.DataArray):
+        slope = slope.data
+    if isinstance(intercept,xr.DataArray):
+        intercept = intercept.data
+    if isinstance(x0,xr.DataArray):
+        x0 = x0.data
+    if isinstance(y0,xr.DataArray):
+        y0 = y0.data
+    
+    b = -x0+slope*(intercept-y0)
+    a = 1+slope**2
+    c = x0**2 + (intercept-y0)**2 - xProj**2
+
+    x = np.array([(-b+np.sqrt(b**2 - a*c[i]))/a if xProj[i]>=0 else (-b - np.sqrt(b**2 - a*c[i]))/a for i in range(xProj.size)])
+
+    y = slope*x + intercept
+
+    return x,y
+
+def least_squares_matrix(y,A,dataCov=None):
+    #note, this is for solving the equation y = Am, which is a matrix representation of 
+    #y_1 = m_1*A_11 + m_2*A_12 + ...
+    #y should be entered as a 1 dimensional array of length alpha and will be transformed to have dimensions (alpha,1)
+    #A should be a matrix with dimensions (alpha,beta)
+    #m has dimensions (beta,1) and will be output as a 1 dimesnional array with length beta.
+    #dataCov is the covariance matrix of y, which has dimensions (alpha,alpha).
+    #If data in y are uncorrelated, dataCov will be a diagonal matrix with variances of each entry in y on the diagonal.
+    #If dataCov is None, assume that dataCov is the identity matrix multiplied by the variance of the fit residuals.
+
+    y = y[:,np.newaxis]
+
+    G = np.matmul(np.linalg.inv(np.matmul(A.T,A)),A.T)
+
+    m = np.matmul(G,y)
+
+    estimate = np.matmul(A,m)
+
+    if dataCov is None:
+        error = y-estimate
+        std = np.std(error)
+
+        mCov = np.matmul(G,G.T)*std**2
+    else:
+        mCov = np.matmul(np.matmul(G,dataCov),G.T)
+
+    return np.squeeze(m), np.squeeze(estimate), mCov

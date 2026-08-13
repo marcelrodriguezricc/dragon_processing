@@ -130,7 +130,7 @@ def rotateS_signature_XYZ_to_ENU(time,timeFull,velXYZ,heading,roll,pitch,orienta
 #     amplitude = sig.beam_amplitude[...,beamIndex].values.copy()
 #     dist = sig.z.values.copy()
 #     time = sig.time.values.copy()
-#     bottomDistance = sig.bottomDistanceBeam[...,beamIndex].values.copy()
+#     bottomDistance = sig.bottomDistance_beam[...,beamIndex].values.copy()
 #     mask = sig.bottomDetectionMask[...,beamIndex].values.copy()
 #     edgeMin = sig.bottomDetectionEdgeMin[beamIndex].values.item()
 #     edgeMax = sig.bottomDetectionEdgeMax[beamIndex].values.item()
@@ -394,7 +394,7 @@ def rotateS_signature_XYZ_to_ENU(time,timeFull,velXYZ,heading,roll,pitch,orienta
 #         confirmed = confirm_choices("Skipping bottom detection and returning starting values")
 
 #         if confirmed:
-#             bottomDistance = sig.bottomDistanceBeam[...,beamIndex].values
+#             bottomDistance = sig.bottomDistance_beam[...,beamIndex].values
 #             mask = sig.bottomDetectionMask[...,beamIndex].values
 #             edgeMin = sig.bottomDetectionEdgeMin[beamIndex].values
 #             edgeMax = sig.bottomDetectionEdgeMax[beamIndex].values
@@ -433,7 +433,7 @@ def rotateS_signature_XYZ_to_ENU(time,timeFull,velXYZ,heading,roll,pitch,orienta
 #             time_library.sleep(1)
 
 #     if not skipped:
-#         sig.bottomDistanceBeam[...,beamIndex] = bottomDistance
+#         sig.bottomDistance_beam[...,beamIndex] = bottomDistance
 #         sig.bottomDetectionMask[...,beamIndex] = mask
 #         sig.bottomDetectionEdgeMin[beamIndex] = edgeMin
 #         sig.bottomDetectionEdgeMax[beamIndex] = edgeMax
@@ -517,9 +517,9 @@ def load_signature_mode_specific(sigProc, sigRaw, mode):
         }
     
     xyz_vars = {
-        'Accelerometer': ('acceleration_XYZ', ('direction','time')),
-        'Magnetometer': ('magnetometer_XYZ', ('direction','time')),
-        'AHRSGyro': ('gyro_XYZ', ('direction','time')),
+        'Accelerometer': ('acceleration_xyz', ('direction','time')),
+        'Magnetometer': ('magnetometer_xyz', ('direction','time')),
+        'AHRSGyro': ('gyro_xyz', ('direction','time')),
     }
 
     # Base variable definitions
@@ -665,7 +665,7 @@ def combine_signature_full_time_data(sig):
     modes = sig.modes
 
     vars = ['temperature_raw','pressure', 
-            'acceleration_XYZ', 'magnetometer_XYZ', 'gyro_XYZ',
+            'acceleration_xyz', 'magnetometer_xyz', 'gyro_xyz',
             'heading_angle', 'pitch_angle', 'roll_angle']
     
 
@@ -796,11 +796,11 @@ def clean_signature_beam_velocities(sig, error, beam5=False, error5=None, BT=Fal
     amp = sig['beam_amplitude'].values
 
     # Mask bad correlations and amplitudes for all beams
-    mask_QC_velBeam = (cor < cor_cutoff) | (amp < amp_cutoff)
+    mask_qc_beam_velocity = (cor < cor_cutoff) | (amp < amp_cutoff)
 
     # Mask for bad roll/pitch or error code
     time_full_index_normal = np.isin(sig.time_full, sig.time)
-    mask_QC_velBeam[(sig.roll_angle[time_full_index_normal] > roll_cutoff) | (sig.pitch_angle[time_full_index_normal] > pitch_cutoff) | (error != 0),:,:4] = True
+    mask_qc_beam_velocity[(sig.roll_angle[time_full_index_normal] > roll_cutoff) | (sig.pitch_angle[time_full_index_normal] > pitch_cutoff) | (error != 0),:,:4] = True
 
     if beam5:
         if 'I' not in sig.modes:
@@ -808,14 +808,14 @@ def clean_signature_beam_velocities(sig, error, beam5=False, error5=None, BT=Fal
         
         nat_mask = np.isnat(sig.time_I.values)
         if np.any(nat_mask):
-            mask_QC_velBeam[nat_mask,:,:] = True
+            mask_qc_beam_velocity[nat_mask,:,:] = True
 
         time_full_index_5th_beam = np.isin(sig.time_full, sig.time_I)
-        mask_QC_velBeam[np.where(~nat_mask)[0][(sig.roll_angle[time_full_index_5th_beam] > roll_cutoff) | (sig.pitch_angle[time_full_index_5th_beam] > pitch_cutoff) | (error[~nat_mask] != 0)],:,4] = True
+        mask_qc_beam_velocity[np.where(~nat_mask)[0][(sig.roll_angle[time_full_index_5th_beam] > roll_cutoff) | (sig.pitch_angle[time_full_index_5th_beam] > pitch_cutoff) | (error[~nat_mask] != 0)],:,4] = True
 
     # Save back to dataset
-    sig['mask_QC_velBeam'] = (('time','z','beam'),mask_QC_velBeam)
-    sig.mask_QC_velBeam.attrs['notes'] = 'True where velocity has low correlation/amplitude or bad roll/pitch/error code'
+    sig['mask_qc_beam_velocity'] = (('time','z','beam'),mask_qc_beam_velocity)
+    sig.mask_qc_beam_velocity.attrs['notes'] = 'True where velocity has low correlation/amplitude or bad roll/pitch/error code'
 
     if BT:
         if 'BT' not in sig.modes:
@@ -829,23 +829,23 @@ def clean_signature_beam_velocities(sig, error, beam5=False, error5=None, BT=Fal
 
         fom = sig.beam_bottom_track_figure_of_merit_BT.values
 
-        mask_QC_velBeam_BT = fom > bottom_track_fom_cutoff #don't use bottom track velocities where figure of merit is above cutoff
+        mask_qc_beam_velocity_BT = fom > bottom_track_fom_cutoff #don't use bottom track velocities where figure of merit is above cutoff
 
         #don't use bottom track velocities where time_BT is NaT
         nat_mask = np.isnat(sig.time_BT.values)
         if np.any(nat_mask):
-            mask_QC_velBeam_BT[nat_mask,:] = True
+            mask_qc_beam_velocity_BT[nat_mask,:] = True
 
         # Mask for bad roll/pitch or error code
         time_full_index_BT = np.isin(sig.time_full, sig.time_BT)
-        mask_QC_velBeam_BT[np.where(~nat_mask)[0][(sig.roll_angle[time_full_index_BT] > roll_cutoff) | (sig.pitch_angle[time_full_index_BT] > pitch_cutoff) | (errorBT[~nat_mask] != 0)],:4] = True
+        mask_qc_beam_velocity_BT[np.where(~nat_mask)[0][(sig.roll_angle[time_full_index_BT] > roll_cutoff) | (sig.pitch_angle[time_full_index_BT] > pitch_cutoff) | (errorBT[~nat_mask] != 0)],:4] = True
 
         # if we only have good BT for a single time step, assume it is bad and mask it, since we are getting a few individual velocities that are looking clearly wrong.
-        mask_QC_velBeam_BT[1:-1,:] = mask_QC_velBeam_BT[1:-1,:] | (mask_QC_velBeam_BT[:-2,:].astype(int) + mask_QC_velBeam_BT[2:,:].astype(int) == 2)
+        mask_qc_beam_velocity_BT[1:-1,:] = mask_qc_beam_velocity_BT[1:-1,:] | (mask_qc_beam_velocity_BT[:-2,:].astype(int) + mask_qc_beam_velocity_BT[2:,:].astype(int) == 2)
 
         # Save back to dataset
-        sig['mask_QC_velBeam_BT'] = (('time','beam'),mask_QC_velBeam_BT)
-        sig.mask_QC_velBeam_BT.attrs['notes'] = 'True where BT velocity has low figure of merit or bad roll/pitch/error code or where there is only a single good BT time step surrounded by bad time steps'
+        sig['mask_qc_beam_velocity_BT'] = (('time','beam'),mask_qc_beam_velocity_BT)
+        sig.mask_qc_beam_velocity_BT.attrs['notes'] = 'True where BT velocity has low figure of merit or bad roll/pitch/error code or where there is only a single good BT time step surrounded by bad time steps'
 
     return sig
 
@@ -891,9 +891,9 @@ def calc_backscatter(sig):
     amp = sig.beam_amplitude.values
     distance = sig.beam_distance.values[np.newaxis,:,:].repeat(sig.time.size,axis=0)
     backscatter = amplitude_to_backscatter(amp, distance)
-    sig['backscatterBeam'] = (('time','z','beam'), backscatter)
-    sig.backscatterBeam.attrs['units'] = 'relative backscatter'
-    sig.backscatterBeam.attrs['notes'] = 'Relative backscatter calculated from amplitude and distance along beam following  backscatter = 10*log10(amp) + 2 * 9.793e-3 * distance + 20 * log10(distance). This is approximate and only useful for looking at relative differences in backscatter, not absolute values.'
+    sig['beam_backscatter'] = (('time','z','beam'), backscatter)
+    sig.beam_backscatter.attrs['units'] = 'relative backscatter'
+    sig.beam_backscatter.attrs['notes'] = 'Relative backscatter calculated from amplitude and distance along beam following  backscatter = 10*log10(amp) + 2 * 9.793e-3 * distance + 20 * log10(distance). This is approximate and only useful for looking at relative differences in backscatter, not absolute values.'
 
     return sig
 
@@ -950,7 +950,7 @@ def signature_velocity_correction(sig):
     
     #get raw beam velocities and apply QC mask to set bad velocities to NaN
     vRef = sig.beam_velocity_l0.data.copy()
-    vRef[sig.mask_QC_velBeam] = np.nan
+    vRef[sig.mask_qc_beam_velocity] = np.nan
 
     #determine where a 3 beam calculation is possible/needed and do it for the first 4 beams (doesn't care if there is a 5th beam or not)
     threeBeamSolMask = three_beam_mask_calc(vRef)
@@ -959,10 +959,10 @@ def signature_velocity_correction(sig):
     #store results in dataset
     sig['velBeam_l1'] = (('time','z','beam'), vl1)
     sig.velBeam_l1.attrs = sig.beam_velocity_l0.attrs.copy()
-    sig.velBeam_l1.attrs['notes'] = 'Velocity in beam coordinates after QC. Uses mask_QC_velBeam to set bad data to NaN. also Includes 3-beam solution where needed as noted in mask_3beam_velBeam.'
+    sig.velBeam_l1.attrs['notes'] = 'Velocity in beam coordinates after QC. Uses mask_qc_beam_velocity to set bad data to NaN. also Includes 3-beam solution where needed as noted in mask_3beam_beam_velocity.'
 
-    sig['mask_3beam_velBeam'] = (('time','z','beam'),threeBeamSolMask)
-    sig.mask_3beam_velBeam.attrs['notes'] = 'True where a beam was filled in the 3-beam solution in l1 and greater velocities.'
+    sig['mask_3beam_beam_velocity'] = (('time','z','beam'),threeBeamSolMask)
+    sig.mask_3beam_beam_velocity.attrs['notes'] = 'True where a beam was filled in the 3-beam solution in l1 and greater velocities.'
 
     if 'BT' in sig.modes:
 
@@ -971,7 +971,7 @@ def signature_velocity_correction(sig):
 
         #pull raw data and apply QC mask to set bad velocities to NaN
         vRef_BT = sig.beam_velocity_l0_BT.data.copy()
-        vRef_BT[sig.mask_QC_velBeam_BT] = np.nan
+        vRef_BT[sig.mask_qc_beam_velocity_BT] = np.nan
 
         #identify where 3 beam solution is needed and possible
         threeBeamSolMask_BT = three_beam_mask_calc(vRef_BT)
@@ -1016,14 +1016,14 @@ def signature_velocity_correction(sig):
         sig.beam_velocity_l2.attrs['notes'] = 'Velocity in beam coordinates after bottom track correction. ' \
         'basic QC bottom track data interpolated to relevant time-stamp for each beam and bottom tracks above -5m depth removed before 3 beam solutions were calculated and then BT velocity subtracted. ' \
         'For the 5th beam, uses the Z component of the bottom track 4 beam solution. ' \
-        'Uses of the 3 beam solution in BT velocities that are subtracted from l1 velocities are noted in mask_3beam_velBeam_BT.'
+        'Uses of the 3 beam solution in BT velocities that are subtracted from l1 velocities are noted in mask_3beam_beam_velocity_BT.'
 
-        sig['mask_3beam_velBeam_BT'] = (('time','beam'), mask_BT3beam_velBeam)
-        sig.mask_3beam_velBeam_BT.attrs['notes'] = '0 where no 3 beam solution was used. 1 where a 3-beam solution was used because of QC flag. 2 where 3-beam solution was used because of surface. Used for the bottom track velocity that was used to calculate the l2 velocities.'
+        sig['mask_3beam_beam_velocity_BT'] = (('time','beam'), mask_BT3beam_velBeam)
+        sig.mask_3beam_beam_velocity_BT.attrs['notes'] = '0 where no 3 beam solution was used. 1 where a 3-beam solution was used because of QC flag. 2 where 3-beam solution was used because of surface. Used for the bottom track velocity that was used to calculate the l2 velocities.'
 
         sig['beam_velocity_l1_BT'] = (('time','beam'),vl1_BT)
         sig.beam_velocity_l1_BT.attrs = sig.beam_velocity_l0_BT.attrs.copy()
-        sig.beam_velocity_l1_BT.attrs['notes'] = 'Bottom track velocity in beam coordinates after QC. Uses mask_QC_velBeam_BT to set bad data to NaN, then deletes data above -5m depth. also Includes 3-beam solution where needed as noted in mask_BT3beam_velBeam.'
+        sig.beam_velocity_l1_BT.attrs['notes'] = 'Bottom track velocity in beam coordinates after QC. Uses mask_qc_beam_velocity_BT to set bad data to NaN, then deletes data above -5m depth. also Includes 3-beam solution where needed as noted in mask_BT3beam_velBeam.'
 
     return sig
 
@@ -1045,8 +1045,8 @@ def transformSignatureBeamVelocities(sig):
     sig.error_velocity_l2.attrs = sig.beam_velocity_l2.attrs.copy()
     sig.error_velocity_l2.attrs['notes'] = 'Error velocity from 4 beam transformation using l2 beam velocities. '
 
-    sig['mask_3beam_velocity_XYZ'] = (('time','z','direction'), np.any(sig.mask_3beam_velBeam.data[...,:4], axis=-1)[:,:,None].repeat(3,axis=-1))
-    sig.mask_3beam_velocity_XYZ.attrs = sig.mask_3beam_velBeam.attrs.copy()
+    sig['mask_3beam_velocity_XYZ'] = (('time','z','direction'), np.any(sig.mask_3beam_beam_velocity.data[...,:4], axis=-1)[:,:,None].repeat(3,axis=-1))
+    sig.mask_3beam_velocity_XYZ.attrs = sig.mask_3beam_beam_velocity.attrs.copy()
     sig.mask_3beam_velocity_XYZ.attrs['notes'] = 'True where 4 beam transformation used a beam that was filled in using the 3-beam solution.'
 
     convert_BT = sig.beam_to_XYZ_conversion_BT.reshape(4,4)
@@ -1062,8 +1062,8 @@ def transformSignatureBeamVelocities(sig):
     sig.error_velocity_BT.attrs = sig.beam_velocity_l1_BT.attrs.copy()
     sig.error_velocity_BT.attrs['notes'] = 'Error velocity from 4 beam transformation using l1 bottom track beam velocities.'
 
-    sig['mask_3beam_velocity_XYZ_BT'] = (('time','direction'), np.any(sig.mask_3beam_velBeam_BT.data[...,:4], axis=-1)[:,None].repeat(3,axis=-1))
-    sig.mask_3beam_velocity_XYZ_BT.attrs = sig.mask_3beam_velBeam_BT.attrs.copy()
+    sig['mask_3beam_velocity_XYZ_BT'] = (('time','direction'), np.any(sig.mask_3beam_beam_velocity_BT.data[...,:4], axis=-1)[:,None].repeat(3,axis=-1))
+    sig.mask_3beam_velocity_XYZ_BT.attrs = sig.mask_3beam_beam_velocity_BT.attrs.copy()
     sig.mask_3beam_velocity_XYZ_BT.attrs['notes'] = 'True where 4 beam transformation used a beam that was filled in using the 3-beam solution for BT velocities'
 
     sig['velENU_l1_BT'] = (('time','direction'), rotateS_signature_XYZ_to_ENU(sig.time_BT.data,sig.time_full.data,sig.velocity_XYZ_l1_BT.data,sig.heading_angle.data,sig.roll_angle.data,sig.pitch_angle.data,orientation='up',degrees=True))
@@ -1081,9 +1081,9 @@ def transformSignatureBeamVelocities(sig):
 def signatureGetBottom(sig,existing_bottom_detection=None,interactive=False):
 
     if existing_bottom_detection is None:
-        sig['bottom_distanceBeam'] = (('time','beam'), sig.beam_bottom_track_distance_BT.data.copy())
-        sig.bottom_distanceBeam.attrs['units'] = 'm'
-        sig.bottom_distanceBeam.attrs['notes'] = 'Distance to bottom from ADCP beam, calculated using the bottom detection algorithm with bottomDetectionMask, bottomDetectionEdgeMin, bottomDetectionEdgeMax, and bottomDetectionAmplitudeThreshold as inputs.' \
+        sig['bottom_distance_beam'] = (('time','beam'), sig.beam_bottom_track_distance_BT.data.copy())
+        sig.bottom_distance_beam.attrs['units'] = 'm'
+        sig.bottom_distance_beam.attrs['notes'] = 'Distance to bottom from ADCP beam, calculated using the bottom detection algorithm with bottomDetectionMask, bottomDetectionEdgeMin, bottomDetectionEdgeMax, and bottomDetectionAmplitudeThreshold as inputs.' \
         ' If bottomDetectionSkipped is True for a beam, this is just the raw bottom track distance for that beam.'
 
         sig['bottomDetectionMask'] = (('time','z','beam'), np.ones(sig.beam_amplitude.shape,dtype=bool))
