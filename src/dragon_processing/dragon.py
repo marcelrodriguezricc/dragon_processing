@@ -1,4 +1,4 @@
-from collections import defaultdict
+
 from pathlib import Path
 
 import numpy as np
@@ -6,9 +6,13 @@ import xarray as xr
 from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import interp1d
 
-from .adcp import initial_clean_signature, load_raw_signature
+from .adcp import process_deployment_adcp
+from .aris3000 import (
+    get_beam_direction_from_nortek_orientation_earth_coords,
+    process_deployment_aris,
+)
 from .beam_binning import beam_bin_deployment
-from .ctd import initial_clean_dragon_ctd, readRSK
+from .ctd import process_deployment_ctd
 from .plotting import initial_dragon_plots
 from .utilities import (
     convert_time_to_float,
@@ -39,13 +43,6 @@ def find_deployments(config):
 
     return sorted(deployments)
 
-def find_sig_folders(dep_path):
-    sig_paths = []
-    for path in dep_path.rglob('sig*'):
-        if path.is_dir():
-            sig_paths.append(path)
-    return sorted(sig_paths)
-
 def get_proc_path(raw_deploy_path, config):
     """
     Mirrror the raw deploy folder structure into the processed folder.
@@ -58,121 +55,6 @@ def get_proc_path(raw_deploy_path, config):
     )
 
     return config.proc_path / 'dragon' / relative_path
-
-def process_deployment_adcp(deployment_path,processed_path,qc,lat,overwrite=False):
-    deployment_num = '_'.join(deployment_path.name.split('_')[:-1])
-    sig_paths = find_sig_folders(deployment_path)
-    output_dict = {}
-    for sig in sig_paths:
-        print(f'found {sig.name}\n')
-
-        #find all mat files for this adcp deployment and determine which ones group together
-        # adcp_files = list(sig.rglob('*.mat'))
-        adcp_files = defaultdict(list)
-        for raw_file in sig.rglob('*.mat'):
-            adcp_files[raw_file.name.split('.')[0]].append(raw_file)
-        # grouped_files = defaultdict(list)
-        # adcp_names = [file.name.split('.')[0] for file in adcp_files]
-        sig_dict = {}
-        #loop through process file that wants to be created
-        for file_name, raw_files in adcp_files.items():
-            #prep save file path to see if deployment already processed
-            proc_save_file = processed_path / f'dragon_{deployment_num}_{sig.name}.nc'
-            if not overwrite and proc_save_file.is_file():
-                print(f'skipping {proc_save_file.name}, already created')
-                sig_dict[file_name] = xr.load_dataset(proc_save_file)
-                continue
-        
-            proc_adcp_list = []
-            #loop through all raw files and do initial cleaning
-            for raw_file in sorted(raw_files):
-                file_number = raw_file.name.split('.')[-2].split('_')[-1]
-                raw_save_folder = raw_file.parents[1] / 'netcdf'
-                raw_save_folder.mkdir(parents=True,exist_ok=True)
-                raw_save_file = raw_save_folder / f'{file_name}_{sig.name}_{file_number}.nc'
-                config_save_file = raw_save_folder / f'{file_name}_{sig.name}_{file_number}_config.nc'
-                if not overwrite and raw_save_file.is_file():
-                    print(f'skipping {raw_file.name} -> {raw_save_file.name}, already converted')
-                    print(f'cleaning {raw_save_file.name}\n')
-                    with xr.open_dataset(raw_save_file) as raw_adcp, \
-                        xr.open_dataset(config_save_file) as adcp_config:
-                        proc_adcp_temp = initial_clean_signature(
-                            raw_adcp.load(),
-                            adcp_config.load(),
-                            qc=qc,
-                            lat=lat,
-                        )
-                else:
-                    print(f'converting {raw_file.name}')
-                    raw_adcp, adcp_config = load_raw_signature(raw_file,config=True,software='MIDAS')
-                    file_save(raw_adcp,raw_save_file,overwrite)
-                    file_save(adcp_config,config_save_file,overwrite)
-                    print(f'cleaning {raw_save_file.name}\n')
-                    proc_adcp_temp = initial_clean_signature(raw_adcp,adcp_config,qc=qc,lat=lat)
-                proc_adcp_list.append(proc_adcp_temp)
-            if not proc_adcp_list:
-                raise ValueError(f'no processed adcp data for {file_name}. Probably an error in the code.')
-            elif len(proc_adcp_list)>1:
-                print('joinging multiple processed files into one dataset')
-                #identify all time stamps
-                order = np.argsort([temp.time.data[0] for temp in proc_adcp_list])
-                proc_adcp_list = [proc_adcp_list[i] for i in order]
-
-                dims_to_concatenate = [
-                    dim for dim in proc_adcp_list[0].dims
-                    if 'time' in dim
-                ]
-
-                #concatenate along first time dimension
-                proc_adcp = xr.concat([temp.drop_dims(dims_to_concatenate[1:]) for temp in proc_adcp_list], dim=dims_to_concatenate[0],data_vars=None,compat='equals')
-
-                #concatenate along all other time dimensions
-                for i in range(1, len(dims_to_concatenate)):
-                    for name, da in xr.concat([temp.drop_dims(dims_to_concatenate[:i]+dims_to_concatenate[i+1:]) for temp in proc_adcp_list], dim=dims_to_concatenate[i],data_vars=None,compat='equals').data_vars.items():
-                        proc_adcp[name] = da
-            else:
-                proc_adcp = proc_adcp_list[0]
-
-            file_save(proc_adcp,proc_save_file,overwrite)
-            print('')  # noqa: FURB105
-            sig_dict[file_name] = proc_adcp
-        output_dict[sig.name] = sig_dict
-
-    return output_dict
-
-def process_deployment_ctd(deployment_path,processed_path,lat,lon,overwrite=False):
-    deployment_num = '_'.join(deployment_path.name.split('_')[:-1])
-    proc_file = processed_path / f'dragon_{deployment_num}_ctd.nc'
-    if not overwrite and proc_file.is_file():
-        print(f'skipping {proc_file.name}, already created')
-        output = xr.load_dataset(proc_file)
-    else:
-        ctd_paths = deployment_path.rglob('*.rsk')
-        processed_ctd_list = []
-        for file in sorted(ctd_paths):
-            raw_save_file = file.parent / f'dragon_ctd_{file.with_suffix('.nc').name}'
-            if not overwrite and raw_save_file.is_file():
-                print(f'skipping {file.name} -> {raw_save_file.name}, already converted')
-                with xr.open_dataset(raw_save_file) as raw_ctd:
-                    print(f'cleaning {raw_save_file.name}')
-                    cleaned_ctd = initial_clean_dragon_ctd(raw_ctd,lat=lat,lon=lon)
-            else:
-                print(f'converting {file.name}')
-                raw_ctd = readRSK(file)
-                file_save(raw_ctd,raw_save_file,overwrite)
-                print(f'cleaning {raw_save_file.name}')
-                cleaned_ctd = initial_clean_dragon_ctd(raw_ctd,lat=lat,lon=lon)
-            processed_ctd_list.append(cleaned_ctd)
-        if not processed_ctd_list:
-            raise ValueError(f'no processed ctd data for {proc_file}\nProbably an error in the code.')
-        elif len(processed_ctd_list)>1:
-            print('combining multiple ctd files into one dataset')
-            output = xr.combine_by_coords(processed_ctd_list)
-        else:
-            output = processed_ctd_list[0]
-        file_save(output, proc_file, overwrite)
-        print('')  # noqa: FURB105
-    return output
 
 def create_dragon_basic_coordinates(dragon,adcp):
     for coord in adcp.coords:
@@ -231,6 +113,41 @@ def dragon_load_adcp_data(dragon,adcp):
     for attr in adcp.attrs:
         dragon.attrs[f'adcp_{attr}'] = adcp.attrs[attr]
 
+    return dragon
+
+def dragon_load_aris_data(dragon,aris):
+
+    aris_prefixed = aris.rename({
+        name:f'aris_{name}' for name in list(aris.variables)
+    })
+    aris_prefixed = aris_prefixed.rename_dims({
+        dim: f'aris_{dim}' for dim in aris_prefixed.dims if not 'aris' in dim
+    })
+    aris_prefixed.attrs = {
+        f'aris_{k}':v for k,v in aris.attrs.items()
+    }
+
+    dragon = xr.merge([dragon,aris_prefixed])
+    dragon.attrs.update(aris_prefixed.attrs)
+
+    degrees = dragon.aris_beam_angle_units=='degrees'
+    dragon['aris_beam_directions'] = (
+        ('aris_time','aris_beam','direction'), np.array([
+            get_beam_direction_from_nortek_orientation_earth_coords(
+                dragon.aris_beam_angle.data,
+                heading,
+                roll,
+                pitch,
+                degrees=degrees,
+                orientation='up'
+            )
+            for [heading,roll,pitch] in zip(
+                dataset_convert_timestamp(dragon,'heading_angle',time_from='time_full',time_to='aris_time'),
+                dataset_convert_timestamp(dragon,'roll_angle',time_from='time_full',time_to='aris_time'),
+                dataset_convert_timestamp(dragon,'pitch_angle',time_from='time_full',time_to='aris_time'),
+            )
+        ])
+    )
     return dragon
 
 def dragon_gps_data(dragon,gps,x0=0,y0=0):
@@ -294,9 +211,9 @@ def find_dragon_casts(dragon,time_coord=None,pressure_coord=None,pressure_requir
         if p_max > pressure_requirement:
             cast_list.append([t_start,t_middle,t_end,p_max])
 
-    return dragon_merge_overlapping_casts(cast_list,merge_gap=merge_gap)
+    return [cast[:-1] for cast in dragon_merge_overlapping_casts(cast_list,merge_gap=merge_gap)]
 
-def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
+def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None,cast_descriptions=None):
     if time_coords is None:
         time_coords = ['time']
     if cast_num_names is None:
@@ -308,8 +225,11 @@ def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
     cast_num_down = 1
     cast_num_up = 1.5
 
+    if cast_descriptions is not None:
+        cast_descriptions_all = []
+
     unique_cast_nums = []
-    for t_start, t_middle, t_end, max_pressure in cast_list:
+    for t_start, t_middle, t_end in cast_list:
         for time_coord,cast_num_name in zip(time_coords,cast_num_names):
             ind_down = np.logical_and(dragon[time_coord].data>=t_start,dragon[time_coord].data<t_middle)
             ind_up = np.logical_and(dragon[time_coord].data>=t_middle,dragon[time_coord].data<=t_end)
@@ -318,6 +238,8 @@ def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
             cast_num_dict[cast_num_name][ind_up] = cast_num_up
 
         unique_cast_nums.extend([cast_num_down,cast_num_up])
+        if cast_descriptions is not None:
+            cast_descriptions_all.extend([cast_descriptions[cast_num_down-1]+' down cast',cast_descriptions[cast_num_down-1] + ' up cast'])
 
         cast_num_down += 1
         cast_num_up += 1
@@ -325,35 +247,43 @@ def number_casts(dragon,cast_list,time_coords=None,cast_num_names=None):
     dragon.coords['cast'] = unique_cast_nums
     dragon.cast.attrs['notes'] = 'Unique cast numbers in the dataset. Integer values indicate downcasts, fractional values (e.g. 1.5) indicate upcasts.'
 
+    if cast_descriptions is not None:
+        dragon['cast_descriptions'] = ('cast',cast_descriptions_all)
+
     for time_coord,cast_num_name in zip(time_coords,cast_num_names):
         dragon[cast_num_name] = (time_coord,cast_num_dict[cast_num_name])
 
     return dragon
 
-def cut_dragon_to_casts(dragon,pressure_cutoff = 1):
-    time_coords = ['time', 'time_ctd', 'time_full']
-    cast_num_names = ['cast_num', 'cast_num_ctd', 'cast_num_full']
-    pressure_coords = ['pressure', 'pressure_ctd', 'pressure_adcp']
+def cut_dragon_to_casts(dragon,cast_notes=None,pressure_cutoff = 1):
+
+    time_coords = [coord for coord in dragon.coords if 'time' in coord and ('time_BT' not in coord and 'time_I' not in coord)]
+    cast_num_names = [coord.replace('time','cast_num') for coord in time_coords]
     bottomDetection_names = ['bottom_detection_edge_min', 'bottom_detection_edge_max', 'bottom_detection_amplitude_threshold', 'bottom_detection_skipped', 'bottom_detection_max_interpolate_gap', 'bottom_detection_edge_blur_kernel_x', 'bottom_detection_edge_blur_kernel_y']
 
-    dragon = dragon.isel(
-        time_full=dragon.pressure_adcp>pressure_cutoff,
-        time=dragon.pressure>pressure_cutoff,
-        time_ctd=dragon.pressure_ctd>pressure_cutoff
-    )
+    if cast_notes is None:
+        time_for_cast_detection = 'time'
+        pressure_for_cast_detection = 'pressure'
 
-    t_start = max(dragon[time].data[0] for time in time_coords)
-    t_end = min(dragon[time].data[-1] for time in time_coords)
-    t_slice = slice(t_start, t_end)
-    dragon = dragon.sel(
-        time=t_slice,
-        time_ctd=t_slice,
-        time_full=t_slice,
-    )
+        for var in dragon.data_vars:
+            if 'pressure' in var:
+                dim = dragon[var].dims[0]
+                dragon = dragon.isel({dim:dragon[var]>pressure_cutoff})
+
+        t_start = max(dragon[time].data[0] for time in time_coords if 'aris' not in time)
+        t_end = min(dragon[time].data[-1] for time in time_coords if 'aris' not in time)
+        t_slice = slice(t_start, t_end)
+        dragon = dragon.sel({time:t_slice for time in time_coords})
+
+        cast_list = find_dragon_casts(dragon,time_for_cast_detection,pressure_for_cast_detection)
+        cast_descriptions = None
+    else:
+        cast_list = [[item['time_start'],item['time_middle'],item['time_end']] for item in cast_notes.values()]
+        cast_descriptions = [item['description'] for item in cast_notes.values()]
     
-    cast_list = find_dragon_casts(dragon,time_coords[0],pressure_coords[0])
-    dragon = number_casts(dragon,cast_list,time_coords,cast_num_names)
-    dragon = dragon.isel(time=~np.isnan(dragon.cast_num),time_ctd = ~np.isnan(dragon.cast_num_ctd),time_full=~np.isnan(dragon.cast_num_full))
+    dragon = number_casts(dragon,cast_list,time_coords,cast_num_names,cast_descriptions)
+    dragon = dragon.isel({time:~np.isnan(dragon[cast_num]) for time,cast_num in zip(time_coords,cast_num_names)})
+    # dragon = dragon.isel(time=~np.isnan(dragon.cast_num),time_ctd = ~np.isnan(dragon.cast_num_ctd),time_full=~np.isnan(dragon.cast_num_full))
 
     for var in bottomDetection_names:
         if var in dragon:
@@ -426,7 +356,7 @@ def calculate_displacement(start,end,vel,t):
 def calculate_adcp_positions(dragon):
 
     dragon['adcp_location'] = (('time','XYZ'), np.full((dragon.time.size, 3), np.nan))
-    dragon.adcp_location.data[:,2] = -dataset_convert_timestamp(dragon,'depth_adcp',timeFrom='time_full',timeTo='time')
+    dragon.adcp_location.data[:,2] = -dataset_convert_timestamp(dragon,'depth_adcp',time_from='time_full',time_to='time')
 
     #dragon['x_adcp'] = ('time', np.full(dragon.time.size, np.nan))
     #dragon['y_adcp'] = ('time', np.full(dragon.time.size, np.nan))
@@ -476,10 +406,10 @@ def calculate_adcp_beam_positions(dragon):
 
     #reformat to dimensions of time, dist, adcp_beam, XYZ
     beamDirections = np.repeat(
-        dataset_convert_timestamp(dragon,'beam_directions_earth',timeFrom='time_full',timeTo='time')[:,np.newaxis,:,:],
+        dataset_convert_timestamp(dragon,'beam_directions_earth',time_from='time_full',time_to='time')[:,np.newaxis,:,:],
         dragon.dist.size, axis=1)
 
-    beamDirectionsWall = dataset_convert_timestamp(dragon,'beam_directions_earth',timeFrom='time_full',timeTo='time')
+    beamDirectionsWall = dataset_convert_timestamp(dragon,'beam_directions_earth',time_from='time_full',time_to='time')
 
     dragon_location = np.repeat(np.repeat(
         dragon.adcp_location.data.copy()[:,np.newaxis,np.newaxis,:],
@@ -519,6 +449,25 @@ def calculate_adcp_beam_positions(dragon):
 
     return dragon
 
+def calculate_aris_beam_positions(dragon):
+    dragon_location = dataset_convert_timestamp(dragon,'adcp_location',time_from = 'time', time_to = 'aris_time')[:,np.newaxis,np.newaxis,:]
+    if 'distance' in dragon.coords:
+        beam_distance = dragon.aris_distance.data[np.newaxis,:,np.newaxis,np.newaxis]
+    else:
+        beam_distance = np.array([np.pad(np.linspace(min_range,max_range,n_bins),(0,dragon.aris_bin.size-n_bins)) for min_range,max_range,n_bins in zip(dragon.aris_min_range.data,dragon.aris_max_range.data,dragon.aris_number_of_bins.data)])[:,:,np.newaxis,np.newaxis]
+
+    beam_directions = dragon.aris_beam_directions.data[:,np.newaxis,:,:]
+    dragon['aris_beam_location'] = (
+        ('aris_time','aris_bin','aris_beam','direction'),
+        beam_distance*beam_directions + dragon_location,
+        {
+            'notes' : 'location of each aris beam bin in UTM coordinates for each timestep and beam, using adcp location and orientation with aris beam angles',
+            'units' : 'meters in UTM coordinates'
+        }
+    )
+
+    return dragon
+
 def update_dragon_origin(dragon,x0=None,y0=None):
     """
     Updates the origin of the dragon dataset to the specified x0 and y0 coordinates.
@@ -530,7 +479,7 @@ def update_dragon_origin(dragon,x0=None,y0=None):
     xVariables = ['x_polly','fieldX0','plumeOutlineX']
     yVariables = ['y_polly','fieldY0','plumeOutlineY']
 
-    comboVariables = ['beam_location','beam_wall_location','bin_location','adcp_location','fieldBin_location']
+    comboVariables = ['beam_location','beam_wall_location','bin_location','adcp_location','fieldBin_location','aris_beam_location']
 
     if x0 is not None:
         xDiff = x0 - dragon.x0
@@ -567,18 +516,28 @@ def update_dragon_origin(dragon,x0=None,y0=None):
 
     return dragon
 
-def initial_dragon_file_creation(adcp,ctd,x0=0,y0=0,gps=None,existing_beam_cleaning=None,existing_bottom_tracking=None,full_cleaning=False):
+def initial_dragon_file_creation(adcp,ctd,aris=None,x0=0,y0=0,gps=None,existing_beam_cleaning=None,existing_bottom_tracking=None,full_cleaning=False, cast_notes = None, beam_bin=False):
     
     dragon = create_dragon_basic_coordinates(xr.Dataset(),adcp)
     dragon = dragon_ctd_data(dragon, ctd)
     dragon = dragon_load_adcp_data(dragon,adcp)
     processing_state = 'Processed ADCP and CTD data combined. CTD data interpolated ont main adcp time stamp for dragon depth temperature and salinity.' 
 
+    if aris is not None:
+        dragon = dragon_load_aris_data(dragon, aris)
+        processing_state = processing_state + 'aris data added.'
+        dragon.attrs['aris_included'] = 1
+    else:
+        dragon.attrs['aris_included'] = 0
+
     if gps is not None:
         dragon = dragon_gps_data(dragon,gps,x0=x0,y0=y0)
         processing_state = processing_state + ' Polly gps data added.'
+        dragon.attrs['gps_included'] = 1
+    else:
+        dragon.attrs['gps_included'] = 0
 
-    dragon = cut_dragon_to_casts(dragon)
+    dragon = cut_dragon_to_casts(dragon, cast_notes)
     ' Data split into casts and numbered by deleting data where depth < 1 meter. Casts dividied into downcasts (integer) and upcasts (0.5) based on deepest depth.'   
 
     if (gps is not None) and 'BT' in adcp.modes:
@@ -591,6 +550,11 @@ def initial_dragon_file_creation(adcp,ctd,x0=0,y0=0,gps=None,existing_beam_clean
         dragon = calculate_adcp_beam_positions(dragon)
         processing_state = processing_state + ' Location of adcp calculated based on bottom track velocities and interpolated to main time stamp. ' \
             'Beam locations calculated based on adcp location, beam angles, and beam distance.'
+
+        if aris is not None:
+            dragon = calculate_aris_beam_positions(dragon)
+            processing_state = processing_state + ' Aris beam locations calculated based on adcp location, and assuming aris is oriented the same as the adcp.'
+
         if full_cleaning:
             raise ValueError('full cleaning not yet implemented')
             processing_state = processing_state + 'basic beam cleaning performed (distance to wall and surface deleted) interactively for each cast and saved as a mask (except where beam_cleaning_skipped = True)'
@@ -598,24 +562,49 @@ def initial_dragon_file_creation(adcp,ctd,x0=0,y0=0,gps=None,existing_beam_clean
             dragon['mask_beam_cleaning'] = (('time','bin','adcp_beam'),np.ones((dragon.time.size,dragon.bin.size,dragon.adcp_beam.size),dtype=bool))
             dragon.mask_beam_cleaning.attrs['notes'] = 'mask for beam cleaning, True means data is kept, False means data is removed. Currently all true because no further beam cleaning has occured.'
             processing_state = processing_state + ' No additional beam cleaning performed'
+
+        if beam_bin:
+            dragon = beam_bin_deployment(dragon,max_heading_variation=30)
     else:
         processing_state = processing_state + ' No GPS data available, so adcp and beam locations are not calculated, and no additional beam cleaning performed.'
 
     dragon.attrs['processingState'] = processing_state
 
-    dragon = beam_bin_deployment(dragon,max_heading_variation=30)
+    dragon_out = dragon[sorted(dragon.data_vars)]
 
-    return dragon[sorted(dragon.data_vars)]
+    for c in dragon.coords:
+        if c not in dragon_out.coords:
+            dragon_out = dragon_out.assign_coords({c: dragon.coords[c]})
 
-def process_all(config,overwrite=False,basic_plots=False,default_lat=68.295,default_lon=-30.81):
+    return dragon_out
+
+def process_all(
+        config,
+        overwrite=False,
+        basic_plots=False,
+        default_lat=68.295,
+        default_lon=-30.81,
+        include_aris=False,
+        beam_bin=False,
+        plot_beam_vel_lim=0.15,
+        plot_vel_ENU_lim=0.15,
+        plot_field_vel_lim=0.15,
+        plot_depth_min=-3,
+        plot_depth_max=None,
+        plot_distance_max=None,
+        plot_vertical_smoothing_window=None,
+    ):
 
     #find all dragon deployments
     deployment_paths = find_deployments(config)
+
+    print(f'found deployments: {deployment_paths}')
 
     for dep in deployment_paths:
         print(f'deployment {dep.name}')
         #prep save folder for deployment
         dep_proc_path = get_proc_path(dep,config)
+        dep_proc_path.mkdir(parents=True,exist_ok=True)
         deployment_num = '_'.join(dep.name.split('_')[:-1])
         gps_file = dep_proc_path / "gps.nc"
         beam_cleaning_file = dep_proc_path / "beam_cleaning_information.nc"
@@ -649,6 +638,13 @@ def process_all(config,overwrite=False,basic_plots=False,default_lat=68.295,defa
         adcp_dictionary = process_deployment_adcp(dep,dep_proc_path,config.qc,lat,overwrite)
         ctd = process_deployment_ctd(dep,dep_proc_path,lat=lat,lon=lon,overwrite=overwrite)
 
+        # I think this needs to be moved later because of memory usage, but maybe not.
+        # but first, I might want to try storing with an aris_file coordinate so I don't have to extend all the datasets to a 4000 long bin coordinate
+        if include_aris:
+            aris = process_deployment_aris(dep, aris_frequency=config.aris_frequency, overwrite=overwrite)
+        else:
+            aris = None
+
         if len(adcp_dictionary)>1:
             raise ValueError('naming scheme currently does not handle multiple adcp types')
         for adcp_type, adcp_data in adcp_dictionary.items():  # noqa: PERF102
@@ -660,16 +656,51 @@ def process_all(config,overwrite=False,basic_plots=False,default_lat=68.295,defa
                 raise ValueError(f'Consider restructure adcp processing. multiple processed adcp data files for deployment {dep}')
             else:
                 print(f'creating {save_file.name}')
-                dragon = initial_dragon_file_creation(next(iter(adcp_data.values())),ctd=ctd,x0=config.x0,y0=config.y0,gps=gps,existing_beam_cleaning=existing_beam_cleaning,existing_bottom_tracking=existing_bottom_track)
+                cast_notes = None
+                if config.cast_notes:
+                    if deployment_num in config.cast_notes:
+                        cast_notes = config.cast_notes[deployment_num]
+                        
+                dragon = initial_dragon_file_creation(next(iter(adcp_data.values())),ctd=ctd,aris=aris,x0=config.x0,y0=config.y0,gps=gps,existing_beam_cleaning=existing_beam_cleaning,existing_bottom_tracking=existing_bottom_track, cast_notes = cast_notes, beam_bin= beam_bin)
                 file_save(dragon,save_file,overwrite)
                 if basic_plots:
-                    initial_dragon_plots(dragon,dep_proc_path / 'initial_plots',deployment_num)
+                    initial_dragon_plots(
+                        dragon,dep_proc_path / 'initial_plots',
+                        deployment_num,
+                        beam_vel_lim=plot_beam_vel_lim,
+                        vel_ENU_lim=plot_vel_ENU_lim,
+                        field_vel_lim=plot_field_vel_lim,
+                        depth_min=plot_depth_min,
+                        depth_max=plot_depth_max,
+                        distance_max=plot_distance_max,
+                        vertical_smoothing_window=plot_vertical_smoothing_window
+                    )
 
-def remake_initial_plots(config):
+def remake_initial_plots(
+        config,
+        plot_beam_vel_lim=0.15,
+        plot_vel_ENU_lim=0.15,
+        plot_field_vel_lim=0.15,
+        plot_depth_min=-3,
+        plot_depth_max=None,
+        plot_distance_max=None,
+        plot_vertical_smoothing_window=None,
+        ):
     deployment_paths = find_deployments(config)
     for dep in deployment_paths:
         dep_proc_path = get_proc_path(dep,config)
         deployment_num = '_'.join(dep.name.split('_')[:-1])
         dragon_file = dep_proc_path / f'dragon_{deployment_num}.nc'
+        print(f'remaking plots for {dragon_file.name}')
         with xr.open_dataset(dragon_file) as dragon:
-            initial_dragon_plots(dragon,dep_proc_path / 'initial_plots', deployment_num)
+            initial_dragon_plots(
+                dragon,dep_proc_path / 'initial_plots',
+                deployment_num,
+                beam_vel_lim=plot_beam_vel_lim,
+                vel_ENU_lim=plot_vel_ENU_lim,
+                field_vel_lim=plot_field_vel_lim,
+                depth_min=plot_depth_min,
+                depth_max=plot_depth_max,
+                distance_max=plot_distance_max,
+                vertical_smoothing_window=plot_vertical_smoothing_window
+            )

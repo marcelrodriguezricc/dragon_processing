@@ -27,8 +27,10 @@ class Config:
     err_vel_cutoff : float = DEFAULT_QC['err_vel_cutoff']
     bottom_track_fom_cutoff : float = DEFAULT_QC['bottom_track_fom_cutoff']
     declination : float = DEFAULT_QC['declination']
+    aris_frequency : float = 3
     x0 : float=0
     y0 : float=0
+    cast_notes : dict[str, dict[str,dict]] | None = None # {deployment : {cast_num : {'time_start': time, 'time_middle':time, 'time_end': time, 'description', str}}}
 
     def __post_init__(self) -> None:
         self.raw = Path(self.raw)

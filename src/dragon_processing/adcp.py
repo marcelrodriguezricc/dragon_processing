@@ -3,13 +3,23 @@ import numpy as np
 import xarray as xr
 from scipy.io import loadmat
 from scipy.spatial.transform import Rotation
+from collections import defaultdict
 
 from .utilities import (
     amplitude_to_backscatter,
     dataset_convert_timestamp,
     find_nearest_indices,
     interp_datetime64,
+    file_save
 )
+
+
+def find_sig_folders(dep_path):
+    sig_paths = []
+    for path in dep_path.rglob('sig*'):
+        if path.is_dir():
+            sig_paths.append(path)
+    return sorted(sig_paths)
 
 #region adcp coordinate systems
 
@@ -74,7 +84,7 @@ def get_beam_direction_nortek_earth_coords(beam_angle,heading,roll,pitch,degrees
     beam_directions_earth = [rotation_to_earth.apply(beamDir) for beamDir in beam_directions_instrument]
     return beam_directions_earth
 
-def rotateS_signature_XYZ_to_ENU(time,timeFull,velXYZ,heading,roll,pitch,orientation='up',degrees=True):
+def rotate_signature_XYZ_to_ENU(time,timeFull,velXYZ,heading,roll,pitch,orientation='up',degrees=True):
     # Rotates the XYZ velocities to ENU coordinates based on the heading, roll, and pitch of the instrument.
     # time is the time coordinate of the velocities.
     # timeFull is the full time coordinate of the dataset (used for interpolation).
@@ -708,12 +718,12 @@ def reformat_signature_beam_5_data(sig, beam5variable=None):
     vars = ['beam_velocity_l0','beam_correlation','beam_amplitude']
 
     idx = find_nearest_indices(sig.time_I.data, sig.time.data)
-    if sig.time.size > sig.time_I.size:
-        _,idx_first = np.unique(idx,return_index=True)
-        idxNaN = np.ones(idx.shape,dtype=bool)
-        idxNaN[idx_first] = False
-    else:
-        idxNaN = np.zeros(idx.shape,dtype=bool)
+    # if sig.time.size > sig.time_I.size:
+    _,idx_first = np.unique(idx,return_index=True)
+    idxNaN = np.ones(idx.shape,dtype=bool)
+    idxNaN[idx_first] = False
+    # else:
+    #     idxNaN = np.zeros(idx.shape,dtype=bool)
 
     time = sig.time_I.data[idx]
     time[idxNaN] = np.datetime64('NaT')
@@ -747,12 +757,12 @@ def reformat_signature_bottom_track_data(sig, BTvariable=None):
     vars = ['beam_velocity_l0_BT','beam_bottom_track_figure_of_merit_BT','beam_bottom_track_distance_BT']
 
     idx = find_nearest_indices(sig.time_BT.data, sig.time.data)
-    if sig.time.data.size > sig.time_BT.data.size:
-        _,idx_first = np.unique(idx, return_index=True)
-        idxNaN = np.ones(idx.size,dtype=bool)
-        idxNaN[idx_first] = False
-    else:
-        idxNaN = np.zeros(idx.size,dtype=bool)
+    # if sig.time.data.size > sig.time_BT.data.size:
+    _,idx_first = np.unique(idx, return_index=True)
+    idxNaN = np.ones(idx.size,dtype=bool)
+    idxNaN[idx_first] = False
+    # else:
+    #     idxNaN = np.zeros(idx.size,dtype=bool)
 
     time_BT = sig.time_BT.data[idx]
     time_BT[idxNaN] = np.datetime64('NaT')
@@ -863,17 +873,17 @@ def calc_signature_beam_directions_and_distance_to_surface(sig):
     sig['bottom_distance_along_beam'] = sig.beam_bottom_track_distance_BT.copy()/np.array([np.cos(sig.beam_angle*np.pi/180) if i<4 else 1 for i in range(5)]).transpose()
     sig.bottom_distance_along_beam.attrs['notes'] = 'distance in the along beam direction'
 
-    adcpDepth = np.repeat(np.repeat(dataset_convert_timestamp(sig,'depth',timeFrom='time_full',timeTo='time')[:,np.newaxis,np.newaxis],sig.z.size,axis=1),sig.beam.size,axis=2)
-    adcpDepth_BT = np.repeat(dataset_convert_timestamp(sig,'depth',timeFrom='time_full',timeTo='time_BT')[:,np.newaxis],sig.beam.size,axis=1)
+    adcpDepth = np.repeat(np.repeat(dataset_convert_timestamp(sig,'depth',time_from='time_full',time_to='time')[:,np.newaxis,np.newaxis],sig.z.size,axis=1),sig.beam.size,axis=2)
+    adcpDepth_BT = np.repeat(dataset_convert_timestamp(sig,'depth',time_from='time_full',time_to='time_BT')[:,np.newaxis],sig.beam.size,axis=1)
 
     beam_distance = np.repeat(sig.beam_distance.data.copy()[np.newaxis,:,:],sig.time.size,axis=0)
     bottom_distance = sig.bottom_distance_along_beam.data.copy()
 
     beam_directions = np.repeat(
-        dataset_convert_timestamp(sig,'beam_directions_earth',timeFrom='time_full',timeTo='time')[:,np.newaxis,:,2],
+        dataset_convert_timestamp(sig,'beam_directions_earth',time_from='time_full',time_to='time')[:,np.newaxis,:,2],
         sig.z.size, axis=1)
 
-    beam_directions_BT = dataset_convert_timestamp(sig,'beam_directions_earth',timeFrom='time_full',timeTo='time_BT')[:,:,2]
+    beam_directions_BT = dataset_convert_timestamp(sig,'beam_directions_earth',time_from='time_full',time_to='time_BT')[:,:,2]
 
     sig['beam_depth'] = (('time','z','beam'), -beam_distance*beam_directions + adcpDepth)
     sig.beam_depth.attrs['notes'] = 'depth of each beam bin for each timestep and beam, using adcp pressure sensor depth and orientation with beam angle'
@@ -1066,12 +1076,12 @@ def transformSignatureBeamVelocities(sig):
     sig.mask_3beam_velocity_XYZ_BT.attrs = sig.mask_3beam_beam_velocity_BT.attrs.copy()
     sig.mask_3beam_velocity_XYZ_BT.attrs['notes'] = 'True where 4 beam transformation used a beam that was filled in using the 3-beam solution for BT velocities'
 
-    sig['velENU_l1_BT'] = (('time','direction'), rotateS_signature_XYZ_to_ENU(sig.time_BT.data,sig.time_full.data,sig.velocity_XYZ_l1_BT.data,sig.heading_angle.data,sig.roll_angle.data,sig.pitch_angle.data,orientation='up',degrees=True))
+    sig['velENU_l1_BT'] = (('time','direction'), rotate_signature_XYZ_to_ENU(sig.time_BT.data,sig.time_full.data,sig.velocity_XYZ_l1_BT.data,sig.heading_angle.data,sig.roll_angle.data,sig.pitch_angle.data,orientation='up',degrees=True))
     sig.velENU_l1_BT.attrs = sig.velocity_XYZ_l1_BT.attrs.copy()
     sig.velENU_l1_BT.attrs['notes'] = 'Bottom track velocity in ENU coordinates. Calculated from velocity_XYZ_l1_BT using the heading, roll, and pitch of the instrument. ' \
     'mask_3beam_velocity_XYZ_BT also indicates what velocities depend on a 3 beam solution.'
     
-    sig['velENU_l2'] = (('time','z','direction'), rotateS_signature_XYZ_to_ENU(sig.time.data,sig.time_full.data,sig.velocity_XYZ_l2.data,sig.heading_angle.data,sig.roll_angle.data,sig.pitch_angle.data,orientation='up',degrees=True))
+    sig['velENU_l2'] = (('time','z','direction'), rotate_signature_XYZ_to_ENU(sig.time.data,sig.time_full.data,sig.velocity_XYZ_l2.data,sig.heading_angle.data,sig.roll_angle.data,sig.pitch_angle.data,orientation='up',degrees=True))
     sig.velENU_l2.attrs = sig.velocity_XYZ_l2.attrs.copy()
     sig.velENU_l2.attrs['notes'] = 'velocity in ENU coordinates. Calculated from velocity_XYZ_l2 using the heading, roll, and pitch of the instrument. ' \
     'mask_3beam_velocity_XYZ also indicates what velocities depend on a 3 beam solution.'
@@ -1443,3 +1453,86 @@ def load_raw_signature(fileIn,config,software='signatureDeployment'):
         return signature, configuration
     else:
         return signature
+
+
+
+def process_deployment_adcp(deployment_path,processed_path,qc,lat,overwrite=False):
+    deployment_num = '_'.join(deployment_path.name.split('_')[:-1])
+    sig_paths = find_sig_folders(deployment_path)
+    output_dict = {}
+    for sig in sig_paths:
+        print(f'found {sig.name}\n')
+
+        #find all mat files for this adcp deployment and determine which ones group together
+        # adcp_files = list(sig.rglob('*.mat'))
+        adcp_files = defaultdict(list)
+        for raw_file in sig.rglob('*.mat'):
+            adcp_files[raw_file.name.split('.')[0]].append(raw_file)
+        # grouped_files = defaultdict(list)
+        # adcp_names = [file.name.split('.')[0] for file in adcp_files]
+        sig_dict = {}
+        #loop through process file that wants to be created
+        for file_name, raw_files in adcp_files.items():
+            #prep save file path to see if deployment already processed
+            proc_save_file = processed_path / f'dragon_{deployment_num}_{sig.name}.nc'
+            if not overwrite and proc_save_file.is_file():
+                print(f'skipping {proc_save_file.name}, already created')
+                sig_dict[file_name] = xr.load_dataset(proc_save_file)
+                continue
+        
+            proc_adcp_list = []
+            #loop through all raw files and do initial cleaning
+            for raw_file in sorted(raw_files):
+                file_number = raw_file.name.split('.')[-2].split('_')[-1]
+                raw_save_folder = raw_file.parents[1] / 'netcdf'
+                raw_save_folder.mkdir(parents=True,exist_ok=True)
+                raw_save_file = raw_save_folder / f'{file_name}_{sig.name}_{file_number}.nc'
+                config_save_file = raw_save_folder / f'{file_name}_{sig.name}_{file_number}_config.nc'
+                if not overwrite and raw_save_file.is_file():
+                    print(f'skipping {raw_file.name} -> {raw_save_file.name}, already converted')
+                    print(f'cleaning {raw_save_file.name}\n')
+                    with xr.open_dataset(raw_save_file) as raw_adcp, \
+                        xr.open_dataset(config_save_file) as adcp_config:
+                        proc_adcp_temp = initial_clean_signature(
+                            raw_adcp.load(),
+                            adcp_config.load(),
+                            qc=qc,
+                            lat=lat,
+                        )
+                else:
+                    print(f'converting {raw_file.name}')
+                    raw_adcp, adcp_config = load_raw_signature(raw_file,config=True,software='MIDAS')
+                    file_save(raw_adcp,raw_save_file,overwrite)
+                    file_save(adcp_config,config_save_file,overwrite)
+                    print(f'cleaning {raw_save_file.name}\n')
+                    proc_adcp_temp = initial_clean_signature(raw_adcp,adcp_config,qc=qc,lat=lat)
+                proc_adcp_list.append(proc_adcp_temp)
+            if not proc_adcp_list:
+                raise ValueError(f'no processed adcp data for {file_name}. Probably an error in the code.')
+            elif len(proc_adcp_list)>1:
+                print('joinging multiple processed files into one dataset')
+                #identify all time stamps
+                order = np.argsort([temp.time.data[0] for temp in proc_adcp_list])
+                proc_adcp_list = [proc_adcp_list[i] for i in order]
+
+                dims_to_concatenate = [
+                    dim for dim in proc_adcp_list[0].dims
+                    if 'time' in dim
+                ]
+
+                #concatenate along first time dimension
+                proc_adcp = xr.concat([temp.drop_dims(dims_to_concatenate[1:]) for temp in proc_adcp_list], dim=dims_to_concatenate[0],data_vars=None,compat='equals')
+
+                #concatenate along all other time dimensions
+                for i in range(1, len(dims_to_concatenate)):
+                    for name, da in xr.concat([temp.drop_dims(dims_to_concatenate[:i]+dims_to_concatenate[i+1:]) for temp in proc_adcp_list], dim=dims_to_concatenate[i],data_vars=None,compat='equals').data_vars.items():
+                        proc_adcp[name] = da
+            else:
+                proc_adcp = proc_adcp_list[0]
+
+            file_save(proc_adcp,proc_save_file,overwrite)
+            print('')  # noqa: FURB105
+            sig_dict[file_name] = proc_adcp
+        output_dict[sig.name] = sig_dict
+
+    return output_dict

@@ -3,6 +3,8 @@ import numpy as np
 import pyrsktools
 import xarray as xr
 
+from .utilities import file_save
+
 
 def readRSK(rskFile):
     # Reads a RSK file and returns a xarray Dataset with the CTD data.
@@ -114,3 +116,38 @@ def initial_clean_dragon_ctd(ctd, lat, lon):
     ctdNew.sigma.attrs['notes'] = 'potential density anomaly (sigma0)'
 
     return ctdNew
+
+
+def process_deployment_ctd(deployment_path,processed_path,lat,lon,overwrite=False):
+    deployment_num = '_'.join(deployment_path.name.split('_')[:-1])
+    proc_file = processed_path / f'dragon_{deployment_num}_ctd.nc'
+    if not overwrite and proc_file.is_file():
+        print(f'skipping {proc_file.name}, already created')
+        output = xr.load_dataset(proc_file)
+    else:
+        ctd_paths = deployment_path.rglob('*.rsk')
+        processed_ctd_list = []
+        for file in sorted(ctd_paths):
+            raw_save_file = file.parent / f'dragon_ctd_{file.with_suffix('.nc').name}'
+            if not overwrite and raw_save_file.is_file():
+                print(f'skipping {file.name} -> {raw_save_file.name}, already converted')
+                with xr.open_dataset(raw_save_file) as raw_ctd:
+                    print(f'cleaning {raw_save_file.name}')
+                    cleaned_ctd = initial_clean_dragon_ctd(raw_ctd,lat=lat,lon=lon)
+            else:
+                print(f'converting {file.name}')
+                raw_ctd = readRSK(file)
+                file_save(raw_ctd,raw_save_file,overwrite)
+                print(f'cleaning {raw_save_file.name}')
+                cleaned_ctd = initial_clean_dragon_ctd(raw_ctd,lat=lat,lon=lon)
+            processed_ctd_list.append(cleaned_ctd)
+        if not processed_ctd_list:
+            raise ValueError(f'no processed ctd data for {proc_file}\nProbably an error in the code.')
+        elif len(processed_ctd_list)>1:
+            print('combining multiple ctd files into one dataset')
+            output = xr.combine_by_coords(processed_ctd_list)
+        else:
+            output = processed_ctd_list[0]
+        file_save(output, proc_file, overwrite)
+        print('')  # noqa: FURB105
+    return output

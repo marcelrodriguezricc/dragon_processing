@@ -5,6 +5,17 @@ import xarray as xr
 from pyproj import CRS, Transformer
 from scipy.interpolate import interp1d
 
+UNIX_EPOCH_IN_MATLAB_DAYS = 719529
+DAYS_TO_NANOSECONDS = 86400e9
+
+def convert_matlab_datenum(datenum):
+    dn = datenum - UNIX_EPOCH_IN_MATLAB_DAYS
+    dt = (dn*DAYS_TO_NANOSECONDS).astype('timedelta64[ns]')
+    return np.datetime64('1970-01-01') + dt
+
+def decode_matlab_char(ds):
+    arr = np.asarray(ds)
+    return "".join(chr(x) for x in arr.ravel()).rstrip("\x00")
 
 def file_save(data,file_path,overwrite):
     file_path = Path(file_path)
@@ -59,17 +70,17 @@ def interp_datetime64(x,xp,fp,axis=0,left=None,right=None,fill_value='extrapolat
     
     return f_interp(xFloat)
 
-def dataset_convert_timestamp(dataset,variableName,timeFrom='time_full',timeTo = 'time'):
+def dataset_convert_timestamp(dataset,variableName,time_from='time_full',time_to = 'time'):
     if variableName not in dataset.data_vars:
         raise ValueError(f"Variable '{variableName}' not found in dataset.")
 
-    if timeFrom not in dataset[variableName].coords:
-        raise ValueError(f"Time variable '{timeFrom}' not found in variable coordinates.")
+    if time_from not in dataset[variableName].coords:
+        raise ValueError(f"Time variable '{time_from}' not found in variable coordinates.")
     
-    if timeTo not in dataset.coords:
-        raise ValueError(f"Time variable '{timeTo}' not found in dataset coordinates.")
+    if time_to not in dataset.coords:
+        raise ValueError(f"Time variable '{time_to}' not found in dataset coordinates.")
     
-    return interp_datetime64(dataset[timeTo].data,dataset[timeFrom].data,dataset[variableName].data,axis=0)
+    return interp_datetime64(dataset[time_to].data,dataset[time_from].data,dataset[variableName].data,axis=0)
 
 def lat_lon_to_utm(
     latitude,

@@ -132,10 +132,11 @@ def beam_bin(cast,binSizeX=1,binSizeZ=1,covCutoff=2, beamResidualCutoff=2, maxVe
     heading = np.nanmean(headingsAll[indGoodHeading])
 
     indGoodHeadingData = indGoodHeading[find_nearest_indices(cast.time_full.data,cast.time.data)]
+    indGoodHeadingData[np.any(np.isnan(cast.adcp_location.data),1)] = False
 
     # indBadHeading = np.abs((utf.interpDatetime64(cast.time.data,cast.time_full.data,cast.heading_angle.data)-heading+180)%360-180)>100 #catch times where ADCP is just looking the wrong way, but projection distances won't do.
     slope = 1/np.tan((heading-90)*np.pi/180)
-    intercept = np.mean(cast.adcp_location[indGoodHeadingData,1].data)-slope*np.mean(cast.adcp_location[indGoodHeadingData,0].data)
+    intercept = np.nanmean(cast.adcp_location[indGoodHeadingData,1].data)-slope*np.nanmean(cast.adcp_location[indGoodHeadingData,0].data)
     
     # Project beam and wall locations onto the line
     xnew,ynew = project_to_line(x=cast.beam_location[...,0].data,y=cast.beam_location[...,1].data,slope = slope,intercept=intercept)
@@ -173,7 +174,7 @@ def beam_bin(cast,binSizeX=1,binSizeZ=1,covCutoff=2, beamResidualCutoff=2, maxVe
     binXproj = np.arange(np.floor(xmin/10)*10-binSizeX,np.ceil(xmax/10)*10+binSizeX,step=binSizeX)
     
     # Repeat beam directions for each distance measurement
-    beam_directions = np.repeat(dataset_convert_timestamp(cast,variableName='beam_directions_earth',timeFrom='time_full',timeTo='time')[:,np.newaxis,:,:], cast.dist.size, axis=1) 
+    beam_directions = np.repeat(dataset_convert_timestamp(cast,variableName='beam_directions_earth',time_from='time_full',time_to='time')[:,np.newaxis,:,:], cast.dist.size, axis=1) 
     
     # Initialize arrays for binned velocities, covariances, wall locations, and backscatter
     waterVel1 = np.full((binDepth.size,binXproj.size,3),np.nan)
