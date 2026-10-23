@@ -128,7 +128,7 @@ def process_deployment_ctd(deployment_path,processed_path,lat,lon,overwrite=Fals
         ctd_paths = deployment_path.rglob('*.rsk')
         processed_ctd_list = []
         for file in sorted(ctd_paths):
-            raw_save_file = file.parent / f'dragon_ctd_{file.with_suffix('.nc').name}'
+            raw_save_file = file.parent / f'dragon_ctd_{file.with_suffix(".nc").name}'
             if not overwrite and raw_save_file.is_file():
                 print(f'skipping {file.name} -> {raw_save_file.name}, already converted')
                 with xr.open_dataset(raw_save_file) as raw_ctd:
