@@ -6,11 +6,9 @@ Usage:
 
 import argparse
 from pathlib import Path
-
 import h5py
 import numpy as np
 import pandas as pd
-
 from dragon_processing.utilities import convert_matlab_datenum
 
 
