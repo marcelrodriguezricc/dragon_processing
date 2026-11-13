@@ -1,0 +1,36 @@
+# ===== Frames (use a frame index or a time for each end, not both) =====
+start = 1085 # First frame to export (default: 0)
+end = 2257 # Last frame to export (default: last frame in the file)
+start_time = None # e.g. "2026-08-17T18:00:37", the frame nearest this time (UTC)
+end_time = None # e.g. "2026-08-17T18:09:21", the frame nearest this time (UTC)
+
+# ===== Filters =====
+threshold = 130 # Intensity a sample must exceed to survive the filter, 0-254 (default: 50)
+dynamic_threshold_coef = 7.0 # Intensity the threshold changes for every meter the median peak range is beyond the sonar's minimum range for that frame, lowered for farther frames, 0 or more (default: 0, dynamic threshold off)
+dynamic_threshold_hold = 100 # Most frames since the last frame that passed the structure test that a frame failing the coherence or concentration test can keep that frame's threshold, then it resets to threshold (default: 10)
+min_range = 8 # Closest range from the sonar (m) a sample must be at (default: no limit)
+max_range = None # Farthest range from the sonar (m) a sample must be at (default: no limit)
+
+# ===== Range histogram =====
+range_bins = None # Number of bins in the range histogram (default: 100)
+
+# ===== Peak spline =====
+spline = True # False to turn the peak spline off
+spline_lam = 0.2 # Smoothness, larger is smoother, must be > 0 (default: chosen automatically for each segment)
+spline_min_peaks = 5 # Fewest peaks a segment needs to have a spline fit through it, at least 5 (default: 5)
+spline_max_gap = 5 # Most beams in a row without a peak before a segment is split (default: 3)
+spline_max_jump = 0.2 # Distance (m) between consecutive peaks before a segment is split (default: off)
+
+# ===== Outlier filter =====
+outlier_filter = True # Outlier filter on (true) / off (false)
+outlier_mad = 3.0 # Scales the median absolute deviation above the median score to determine outlier peaks to be removed, lower removes more (default: 3)
+outlier_neighbors = 5 # Neighborhood size / number of nearest peaks each peak is compared with (default: 4)
+outlier_min_diff = 0.1 # Smallest median range difference (m) from its neighbors a peak must have to be removed (default: 0.2)
+outlier_max_from_median = 2.5 # Remove peaks more than this range (m) from the median range of the peaks, works even with outlier_filter = False
+
+# ===== Structure test (whether the spline is drawn) =====
+structure_test = True # False to draw the spline without testing whether thçe structure of peak points
+structure_max_coherence = 0.15 # Low pass threshold coherence ratio for the spline to be drawn (default: 0.5) (1.0 = noise-like, 0.0 = neighboring peaks agree)
+structure_max_concentration = 0.2 # Low pass threshold concentration ratio for the spline to be drawn (1 = spread like noise, 0 = all at one range)
+structure_neighbors = 15 # Neighborhood size = number of nearest peaks each peak is compared with for coherence (default: 4)
+structure_min_peaks = 20 # Fewest peaks a frame needs to be tested, frames with fewer get no spline (default: 10)

@@ -23,6 +23,7 @@ Arguments:
     --spline-min-peaks: fewest peaks a segment needs to have a spline fit through it (at least 5)
     --spline-max-gap: most beams in a row without a peak that a segment can span before it is split
     --spline-max-jump: largest range difference (m) between consecutive peaks before a segment is split (default: off)
+    --spline-min-depth/--spline-max-depth: band-pass depth filter (m), the spline is only drawn on frames whose CTD depth is between them (default: no limit)
     --no-spline: don't fit or draw the peak spline
 
 Usage:
@@ -197,6 +198,8 @@ def main():
     parser.add_argument('--spline-min-peaks', type=int, default=5, help='Fewest peaks a segment needs to have a spline fit through it (default: 5, minimum: 5)')
     parser.add_argument('--spline-max-gap', type=int, default=3, help='Most beams in a row without a peak that a segment can span before it is split (default: 3)')
     parser.add_argument('--spline-max-jump', type=float, help='Largest range difference (m) between consecutive peaks before a segment is split (default: off)')
+    parser.add_argument('--spline-min-depth', type=float, default=float('-inf'), help='Shallowest CTD depth (m) a frame can be at for the spline to be drawn (default: no limit)')
+    parser.add_argument('--spline-max-depth', type=float, default=float('inf'), help='Deepest CTD depth (m) a frame can be at for the spline to be drawn (default: no limit)')
     parser.add_argument('--no-spline', action='store_true', help="Don't fit or draw the peak spline")
     parser.add_argument('--outlier-mad', type=float, default=3.0, help='Scales the amount that the median absolute deviation above the median of all points in a frame a peak must be to be removed as an outlier, lower removes more (default: 3)')
     parser.add_argument('--outlier-neighbors', type=int, default=4, help='Neighborhood size / number of nearest peaks each peak is compared with for outlier removal by scaled median absolute deviation (default: 4)')
@@ -223,6 +226,8 @@ def main():
         parser.error('--spline-lam must be greater than 0')
     if args.spline_min_peaks < 5:
         parser.error('--spline-min-peaks must be at least 5')
+    if args.spline_min_depth >= args.spline_max_depth:
+        parser.error('--spline-min-depth must be less than --spline-max-depth')
     if args.spline_max_gap < 0:
         parser.error('--spline-max-gap must be 0 or more')
     if args.outlier_mad < 0: 
@@ -252,6 +257,9 @@ def main():
     frame_rate = ds.frame_rate.values
     beam_angle = ds.beam_angle.values
     depth = ds.depth.values if 'depth' in ds else None
+    depth_filter = np.isfinite(args.spline_min_depth) or np.isfinite(args.spline_max_depth) # Whether the spline depth band is set
+    if depth_filter and depth is None: # Check that depth is defined
+        parser.error(f'--spline-min-depth/--spline-max-depth need a depth variable, which {args.nc_file.name} does not have')
 
     # Start at specified frame if no start timestamp is specified, or else start the frame nearest to specified start time
     start = args.start if args.start_time is None else nearest_frame(times, args.start_time)
@@ -427,9 +435,13 @@ def main():
         # Structure Test — Concentration / Coherence
         concentration, coherence = peak_structure(peak_beams, peak_r, window_width, args.structure_neighbors, args.structure_min_peaks) # Get concentration and coherence ratios
         count_text += f'\nConcentration: {concentration:.2f}\nCoherence: {coherence:.2f}' # Report both ratios in figure
-        if args.no_structure_test: # If the coherence/concentration structure test is off...
-            skip_reason = None # Draw a spline for all frames with peaks above minimum
-        else:
+        skip_reason = None # Draw the spline unless a check below fails
+        if depth_filter: # If the depth band is set, check it first so it is reported over the structure test...
+            if np.isnan(depth[i]): # If the frame has no CTD depth, it can't be checked
+                skip_reason = 'no depth' # Report no depth
+            elif not args.spline_min_depth <= depth[i] <= args.spline_max_depth: # If the frame is outside the depth band...
+                skip_reason = 'depth' # Report spline not drawn due to depth filter
+        if skip_reason is None and not args.no_structure_test: # If the frame is inside the depth band and the coherence/concentration structure test is on...
             skip_reason = structure_skip_reason(concentration, coherence, args.structure_max_coherence, args.structure_max_concentration) # Get why the frame fails, None if it passes
         if spline_line is not None: # If the spline is turned on...
             if skip_reason is None: # And if the frame passed the test...

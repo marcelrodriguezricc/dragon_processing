@@ -33,6 +33,8 @@ spline_lam = None # Smoothness, larger is smoother, must be > 0 (default: chosen
 spline_min_peaks = 5 # Fewest peaks a segment needs to have a spline fit through it, at least 5 (default: 5)
 spline_max_gap = 3 # Most beams in a row without a peak before a segment is split (default: 3)
 spline_max_jump = None # Distance (m) between peaks before a segment is split (default: off)
+spline_min_depth = None # Shallowest CTD depth (m) a frame can be at for the spline to be drawn (default: no limit)
+spline_max_depth = None # Deepest CTD depth (m) a frame can be at for the spline to be drawn (default: no limit)
 
 # ===== Outlier filter ===== #
 outlier_filter = True # Outlier filter on (true) / off (false)
@@ -71,6 +73,8 @@ options = {
     '--spline-min-peaks': spline_min_peaks,
     '--spline-max-gap': spline_max_gap,
     '--spline-max-jump': spline_max_jump,
+    '--spline-min-depth': spline_min_depth,
+    '--spline-max-depth': spline_max_depth,
     '--outlier-mad': outlier_mad,
     '--outlier-neighbors': outlier_neighbors,
     '--outlier-min-diff': outlier_min_diff,
