@@ -1,7 +1,3 @@
-# ===== Files =====
-nc_file = Path('/Volumes/LeConte Pro/dragon_data/raw/20260817_1800/20260817_1800_dragon/aris3000/2026-08-17_aris.nc')
-output_dir = Path('/Volumes/LeConte Pro/dragon_data/data_visualization/2026-08-17_01_down/filter_staging')
-
 # ===== Frames (use a frame index or a time for each end, not both) =====
 start = 0 # First frame to export (default: 0)
 end = 1084 # Last frame to export (default: last frame in the file)

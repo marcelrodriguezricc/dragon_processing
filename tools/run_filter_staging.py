@@ -59,7 +59,8 @@ if start is not None and start_time is not None:
 if end is not None and end_time is not None:
     sys.exit('Set end or end_time, not both')
 
-script = Path(__file__).resolve().parents[1] / 'tools' / 'aris_filter_staging.py' # Found relative to this file, so it works from any directory
+script = Path(__file__).resolve().parents[1] / 'tools' / 'aris_filter_staging.py' # Change number depending on path to run script relative to main directory
+
 command = [sys.executable, str(script), str(nc_file), str(output_dir)]
 
 options = {
